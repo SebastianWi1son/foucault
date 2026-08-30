@@ -1,0 +1,17 @@
+# 构建产物
+build/
+
+# IDE
+.idea/
+.vscode/
+
+# 只读参考库（各自独立仓库/巨大，不入库）
+reference/
+
+# 课程工程（61M，含 rar/zip 压缩包；用户决定挪入 reference/ 前不入库）
+Mahony-ICM42688-MMC5983/
+
+# 编译中间产物
+*.o
+*.a
+*.so
