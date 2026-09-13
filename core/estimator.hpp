@@ -23,6 +23,8 @@ public:
 
     const math::Quatf& quaternion() const { return solver_.quaternion(); }
     math::Vec3f euler() const { return solver_.euler(); }
+
+    unsigned rejected_count() const { return solver_.rejected_count(); }
 private:
     Solver solver_;
 };

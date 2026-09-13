@@ -2022,15 +2022,271 @@ math::Vec3f Mahony::correction_heading(const math::Vec3f& v) {
 > ```
 > **教训**：判别测试必须断言**被改动的行为**，而不是"调用某个函数后某个状态没变" —— 后者若该函数压根不碰那个状态，就是恒真断言。
 
+---
+
+## 批次 4a-5：脏数据守门人（P1-1）（2026-09-13 ✅ 已在 /tmp 编译 + 实测验证）
+
+**目标**：给 `observe*` / `predict` 加入口校验 —— **一帧 NaN 就能永久毁掉整个估计器**，上车前必须有安全网。
+改动：`core/solver/mahony.hpp`（4 处）+ `mahony.cpp`（6 处）+ `core/estimator.hpp`（1 处），共 **11 处**（见下「改动定位图」）。
+
+### 抄前必懂：三种脏数据，三种完全不同的后果
+
+| 脏输入 | 原代码行为 | 后果 | 可怕之处 |
+|---|---|---|---|
+| `acc = NaN` | `normalize()` 不挡 NaN | `e_int_` **永久污染** → 姿态永不恢复 | **回放实测 roll RMSE = nan** |
+| `gyro = NaN` | 直接进 `integrate` | `q_` **直接变 NaN** | **回放实测 roll RMSE = nan** |
+| `acc = (0,0,0)` | `Vec3::normalize` 有零向量防御 → `acc_ = 0` | 残差恒 0 → **无修正**，但 `acc_age_` 被清零 → `is_acc_valid()` **谎报"有效"** | **回放 RMSE 看不出来（2.151° vs 2.152°）** |
+| `acc` 饱和（9 g）| 方向仍近似 ±z → 残差≈0 | 侥幸无害 | 但传感器已饱和，读数不可信 |
+
+**⚠️ 最反直觉的一条**：`acc = (0,0,0)` 在**回放指标上完全看不出来** —— 因为残差恰好是 0，输出几乎不变。
+**这就是"静默失效"的定义**：系统坏了，但没有任何指标报警。守门人的价值不只是"防炸车"，更是**让静默失效变得可见**（计数器）。
+
+### 设计：四道门，全部在**入口**
+
+```
+observe(acc)  ① isfinite（NaN / ±Inf）
+              ② |acc| ∈ [acc_min_, acc_max_]   ← 传感器死掉 / 饱和
+              ↓ 任一不过 → 【直接丢弃】：不写 acc_、不清 acc_age_、计数 +1
+                          → 年龄继续增长 → 到期后门控自动接管
+
+predict(gyro, dt)
+              ③ !(dt > 0)  → 整帧不推进（时钟倒退 / NaN）+ 计数
+              ④ isfinite(gyro) 不通过 → 本帧按 gyro = 0 积分（假设没转）+ 计数
+```
+
+**设计要点三条**：
+
+1. **脏帧 = "这次量测不作数" → 直接丢弃，不引入新状态**
+   `acc_age_` 不清零 → 它继续 `+= dt` → 超过 `acc_timeout_` 后 `is_acc_valid()` 变 false → `correction_acc` 返回 0。
+   **完全复用 4a-1 建立的年龄门控机制，零新状态、零新分支**。
+
+2. **`dt` 用 `!(dt > 0.0f)` 而不是 `dt <= 0.0f`**
+   `NaN` 与任何数比较恒为 `false` → `!(NaN > 0)` = `true` → **NaN 自动落入这个分支**，一行挡住两种非法值。
+
+3. **脏 `gyro` 不整帧跳过**
+   acc / heading 的修正是**干净的**（它们各有自己的入口守门人），照常参与；只有"这一帧转了多少"被当作 0。
+   同理 **`dt` 非法才整帧跳过** —— 因为它决定"推进多久"，时间不成立则整个动作不成立。
+
+### ⚠️ 单位契约（本批新增的硬约定）
+
+模长门需要知道单位，所以 `observe(acc)` **现在有了单位契约**：
+
+> **`acc` 的单位是 g（1 g = 9.80665 m/s²），`acc_min_` / `acc_max_` 也是 g。**
+
+选 g 的理由：① 现有 `replay_nav2` 喂的就是 g（`replay_nav2.cpp:12`）；② ICM-20602 数据手册本身就是 mg/LSB 标度。
+**对应关系**：`acc_max_ = 2.0f` 正好对应 ICM-20602 的 **±2 g 量程上限**（饱和检测）。
+**如果调用方误喂 m/s²**：`|a| ≈ 9.81 > 2.0` → 全部被拒 → `is_acc_valid()` 变 false + `rejected_count()` 持续增长 → **可检出，不会静默**。
+
+### 计数器语义（Q5）
+
+```cpp
+unsigned rejected_count() const;   // 自构造或上次 reset() 起，被守门人挡掉的输入帧数
+```
+- **单一计数器**：只回答"这一趟跑干净吗"。细分（acc / gyro / dt 分开）**等真实数据驱动**，不提前做。
+- `reset()` / `reset(q)` 清零 → 给台架一个"重开一局"的清零入口（MCU 上构造只发生一次，所以语义 = 本次上电）。
+
+### 文件 24~26：**改动定位图**（3 个文件，共 11 处）
+
+> ⚠️ **本批起 CODE.md 代码块改为「改动定位图」格式**（`AGENT.md §7`，2026-09-13 用户定案）：
+> **代码块不再是粘贴源**。**只替换标 `★4a-5` 的行**；未标 ★ 的行**不要动**——它们只为定位存在，**原有注释已略去**。
+
+---
+
+#### ① `core/solver/mahony.hpp` —— 4 处
+
+**1.1　`MahonyConfig`：在 `acc_timeout_` 之后插入 2 行**
+
+```cpp
+struct MahonyConfig {
+    float kp_ = 5.0f;
+    float ki_ = 0.3f;
+    float integral_limit_ = 10.0f;
+    float acc_timeout_ = 0.1f;
+    // ★4a-5 插入 ↓
+    float acc_min_ = 0.5f;          ///< Accepted |acc| lower bound [g]; rejects dead sensor / free-fall.
+    float acc_max_ = 2.0f;          ///< Accepted |acc| upper bound [g]; rejects saturation.
+    // ★4a-5 插入 ↑
+    float kp_heading_ = 5.0f;
+    float heading_timeout_ = 0.3f;
+};
+```
+
+**1.2　`observe()` 的文档注释：改 1 行 + 加 1 行**
+
+```cpp
+    /// @brief Store an accelerometer sample (direction only, normalized internally).
+    // ★4a-5 加 ↓
+    /// @note Samples failing the input guards are dropped and counted, not stored.
+    // ★4a-5 改：原「/// @param acc Raw reading, any unit/scale」→ 换成下面这行
+    /// @param acc Raw reading in [g]; |acc| must lie in [acc_min_, acc_max_]
+    void observe(const math::Vec3f& acc);
+```
+
+**1.3　`is_heading_valid()` 声明之后，加 `rejected_count()` 声明**
+（你已加 ✅，核对一遍即可）
+
+```cpp
+    bool is_heading_valid() const;
+    // ★4a-5 新增 ↓
+    /// @brief Input frames rejected by the guards (NaN/Inf, |acc| out of range, dt <= 0).
+    /// @note Counted since construction or the last reset(); a rising count means a dying sensor.
+    unsigned rejected_count() const;
+    // ★4a-5 新增 ↑
+```
+
+**1.4　私有成员：`acc_age_` 之后加 1 行**
+
+```cpp
+    float acc_age_ = k_never_measured_;
+    // ★4a-5 新增 ↓
+    unsigned rejected_count_ = 0;
+    // ★4a-5 新增 ↑
+```
+
+---
+
+#### ② `core/solver/mahony.cpp` —— 6 处
+
+**2.1　补 `#include <cmath>`**
+
+```cpp
+#include "mahony.hpp"
+
+// ★4a-5 新增 ↓
+#include <cmath>
+// ★4a-5 新增 ↑
+
+#include "../math/scalar_ops.hpp"
+```
+
+**2.2　⚠️ 匿名 namespace 里的 `is_infinite` —— 改名 + 展开成多行**
+
+> 你已写的 `bool is_infinite(...)` **名字是反的**：它返回 `true` 表示"**是有限值**"。**单行/多行都行，关键是把名字改对。**
+> 若照名字写成 `if (is_infinite(acc)) return;` → **好帧全被丢、NaN 反而被收**（最坏的组合）。
+> 必须改名（`AGENT.md §3` 命名评估：名字要说出返回值的含义）。
+
+```cpp
+    constexpr float k_half_pi = 1.5707963267948966f;
+    // ★4a-5 改：原「bool is_infinite(...) { ... }」整行删掉 → 换成下面 4 行
+    //   守门人：三分量是否都是有限值（NaN / ±Inf 一律不算量测）
+    bool is_finite(const math::Vec3f& v) {
+        return std::isfinite(v.x_) && std::isfinite(v.y_) && std::isfinite(v.z_);
+    }
+}
+```
+
+**2.3　`reset()` 与 `reset(q)`：各在 `reset_heading_channel();` 之前加 1 行（共 2 处）**
+
+```cpp
+    acc_age_ = k_never_measured_;
+    // ★4a-5 新增 ↓（reset() 和 reset(q) 两处都要加）
+    rejected_count_ = 0;
+    // ★4a-5 新增 ↑
+    reset_heading_channel();
+```
+
+**2.4　`observe()`：函数体开头插入 7 行**
+
+```cpp
+void Mahony::observe(const math::Vec3f& acc) {
+    // ★4a-5 新增 ↓
+    //   脏帧 = 【这次量测不作数】→ 直接丢弃
+    //   关键：不清 acc_age_ → 年龄继续增长 → 到期后门控自动接管（复用既有机制，零新状态）
+    if (!is_finite(acc)) { ++rejected_count_; return; }                      // NaN / ±Inf
+    const float n2 = acc.norm_squared();                                     // 输入单位是 g
+    if (n2 < cfg_.acc_min_ * cfg_.acc_min_ ||
+        n2 > cfg_.acc_max_ * cfg_.acc_max_) { ++rejected_count_; return; }   // 传感器死掉 / 饱和
+    // ★4a-5 新增 ↑
+    acc_ = acc;
+    acc_.normalize();
+    acc_age_ = 0.0f;
+}
+```
+
+**2.5　`predict()`：2 处（开头加 dt 门；`omega` 前加 gyro 门 + 改 `gyro` → `gyro_ok`）**
+
+```cpp
+void Mahony::predict(const math::Vec3f& gyro, float dt) {
+    // ★4a-5 新增 ↓（写成 !(dt > 0) 是为了让 NaN 一并落入此分支）
+    if (!(dt > 0.0f)) { ++rejected_count_; return; }
+    // ★4a-5 新增 ↑
+
+    const math::Vec3f v = q_.conjugated().rotate(k_gravity_world);
+
+    // ★4a-5 新增 ↓（脏 gyro → 本帧按 0 积分；acc/heading 的修正照常参与）
+    math::Vec3f gyro_ok = gyro;
+    if (!is_finite(gyro_ok)) { gyro_ok = math::Vec3f(0.0f, 0.0f, 0.0f); ++rejected_count_; }
+    // ★4a-5 新增 ↑
+
+    // ★4a-5 改：原「const math::Vec3f omega = gyro」→ 换成下面这行
+    const math::Vec3f omega = gyro_ok
+                          + correction_acc(v, dt)
+                          + correction_heading(v);
+    ...
+}
+```
+
+**2.6　`is_heading_valid()` 定义之后加 1 行**（对应 hpp 的声明，缺了会 link error）
+
+```cpp
+bool Mahony::is_heading_valid() const { return heading_age_ <= cfg_.heading_timeout_; }
+// ★4a-5 新增 ↓
+unsigned Mahony::rejected_count() const { return rejected_count_; }
+```
+
+---
+
+#### ③ `core/estimator.hpp` —— 1 处
+
+**3.1　`euler()` 之后加 1 行转发**
+
+```cpp
+    math::Vec3f euler() const { return solver_.euler(); }
+    // ★4a-5 新增 ↓
+    unsigned rejected_count() const { return solver_.rejected_count(); }
+```
+
+---
+
+### 验收（已实测）
+
+| 检查项 | 结果 |
+|---|---|
+| 严格编译（`-Wconversion -Wshadow -Werror -pedantic -fno-exceptions -fno-rtti`）| 零告警 |
+| ASan + UBSan | 0 告警 |
+| `ctest` | 5/5 |
+| `test_mahony` **23 锚点**（新增 5 条守门人测试；共 24 条断言，含 17a 前置检查）| ALL PASS |
+| **干净数据五项回放** | **与金标逐位相同**（守门人拦 0 帧）← 本批硬指标 |
+
+**故障注入实测**（新增 `--fault` 到 replay，每 100 帧注入一帧脏数据，共注入 159 帧）：
+
+| 故障 | 无守门人 | 有守门人 |
+|---|---|---|
+| `acc_nan` | roll RMSE = **nan**（永久毁）| **2.152°**（= 干净基线）|
+| `gyro_nan` | roll RMSE = **nan**（永久毁）| **2.152°** |
+| `acc_zero` | 2.151°（**指标看不出问题**）| 2.152°（拦截 159/159）|
+| `acc_sat` | 2.152° | 2.152°（拦截 159/159）|
+
+**5 条判别测试的判别力已验证**（拆掉四道门 → 5/5 全部 FAIL）：
+
+```
+16) NaN acc/gyro 全丢（计数 100），状态有限且不漂   ← 无门时 q_ = NaN
+17) acc 全零被拒 → 门控自然关闭                    ← 无门时 is_acc_valid() 谎报有效
+18) |acc| 越界（9g / 0.1g）被拒，合格帧放行        ← 无门时计数不动
+19) dt = 0 / 负 / NaN → 整帧不推进，姿态零变化      ← 无门时 dt=NaN 毁 q_、dt<0 倒着积分
+20) 干净数据零干预（计数 0）；reset() 清零计数      ← 无门时计数恒 0 无意义
+```
+
 ### 文件 16：测试与回放工具（AI 已写，无需抄录）
 
-- `tests/unit/test_math.cpp`（21 项）/ `test_math_audit.cpp`（**125 项**：含 wrap_pi B9a~B9j）/ `test_mahony.cpp`（**18 锚点**：4 基础 + 批次 4a 系列 14 条，含 P0-4 / 零契约 / 手动对齐判别测试）/ `test_estimator.cpp`（**8 锚点**）
+- `tests/unit/test_math.cpp`（22 项）/ `test_math_audit.cpp`（**125 项**：含 wrap_pi B9a~B9j）/ `test_mahony.cpp`（**23 锚点 / 24 条断言**：4 基础 + 批次 4a 系列 14 + 批次 4a-5 守门人 5 + 前置检查 1）/ `test_estimator.cpp`（**8 锚点**）
 - **批次 4a 的两条判别测试**（它们专门锁死下面两个易错点，抄漏了会红）：
   · `4a-⑩ 参考恢复`：参考断线 10s 后再恢复，漂移必须被拉回 → 锁死「对齐只做一次」（`is_heading_aligned_`，**不能**用 `is_heading_valid()`）
   · `4a-⑪ trust 越界`：负 trust 必须被 clamp 到 0 → 锁死 `math::clamp(trust, 0.0f, 1.0f)`
   · `第13条 acc 失效`：一帧坏量测后断线，冻结残差**不得**被持续复用 → 锁死 P0-4 的年龄门控（实测：改回布尔闩锁会 FAIL）
   · `第14条 零契约`：两通道都不在线 → 两个修正项都为 0（统一出口的语义）
   · `第15条 手动对齐`：对齐【后空窗期】不跳变、之后跟踪新参考、roll/pitch 不受扰
+  · `第16~20条 守门人`：NaN / 全零 / 越界 / dt 非法 / 干净数据零干预（5 条，拆门即全 FAIL）
 - `host/replay/replay_nav2.cpp`：读 NAV2 数据集（文本 12 列：acc3+gyro3+mag3+真值 euler3，弧度，50Hz）→ 跑 `Estimator<solver::Mahony>` → 输出 roll/pitch 的 RMSE/MAX（度）+ yaw 漂移；`-y` 选项注入外部航向（`none|gt|gt_slow|gt_noisy|gt_drop`）；可选导出 CSV
 - **验收标准**：`ctest` 5/5；
   · 无外部航向时 roll/pitch RMSE < 5°，yaw 漂移是 6 轴预期行为（记录即可，不算失败）；

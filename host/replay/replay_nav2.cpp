@@ -1,11 +1,13 @@
 // foucault host/replay/replay_nav2.cpp —— NAV2 数据集回放对比（AI 编写，2026-08-30）
 //
-// 用法：replay_nav2 <数据集路径> [输出CSV路径] [-y 模式]
+// 用法：replay_nav2 <数据集路径> [输出CSV路径] [-y 模式] [--fault 故障]
 //   -y none      不注入外部航向（默认，6 轴基线）
 //   -y gt        注入真值 yaw @50Hz（理想里程计）
 //   -y gt_slow   注入真值 yaw @10Hz（每 5 帧一次，验证多速率）
 //   -y gt_noisy  注入真值 yaw + σ=2° 噪声 @50Hz（验证不爆炸）
 //   -y gt_drop   50Hz，但 t∈[100,130)s 断线（验证 age 门控降级）
+//   --fault none|acc_nan|acc_zero|acc_sat|gyro_nan  每 100 帧注入一帧脏数据
+//                 （批次 4a-5 验收：实测一帧脏数据的后果 + 守门人的拦截效果）
 // 数据集默认在 data/NAV2_data.bin（源：参考库 NAV2 数据集，reference/ 不入 git）
 //
 // 数据集格式（扩展名 .bin 实为文本）：每行 12 列，空格分隔
@@ -40,6 +42,10 @@ constexpr float kDeg = 57.29578f; // rad → deg
 
 // 外部航向注入模式（批次 4a 验收）
 enum class HeadingMode { none, gt, gt_slow, gt_noisy, gt_drop };
+
+// 故障注入模式（批次 4a-5 验收）
+enum class FaultKind { none, acc_nan, acc_zero, acc_sat, gyro_nan };
+constexpr size_t kFaultPeriod = 100;          // 每 N 帧注入一帧脏数据
 
 // 确定性伪随机（无需 <random>，保证回放可复现）
 inline float pseudo_noise(unsigned i) {
@@ -80,12 +86,14 @@ int main(int argc, char** argv)
 {
     if (argc < 2)
     {
-        std::printf("用法: replay_nav2 <数据集路径> [输出CSV路径] [-y none|gt|gt_slow|gt_noisy|gt_drop]\n");
+        std::printf("用法: replay_nav2 <数据集路径> [输出CSV路径] [-y none|gt|gt_slow|gt_noisy|gt_drop]"
+                    " [--fault none|acc_nan|acc_zero|acc_sat|gyro_nan]\n");
         return 1;
     }
 
     // 解析 -y 模式 + 位置参数（数据集 / CSV）
     HeadingMode heading_mode = HeadingMode::none;
+    FaultKind   fault        = FaultKind::none;
     const char* data_path = nullptr;
     const char* csv_path = nullptr;
     for (int i = 1; i < argc; ++i)
@@ -99,6 +107,16 @@ int main(int argc, char** argv)
             else if (m == "gt_noisy") heading_mode = HeadingMode::gt_noisy;
             else if (m == "gt_drop")  heading_mode = HeadingMode::gt_drop;
             else { std::printf("未知 -y 模式: %s\n", m.c_str()); return 1; }
+        }
+        else if (std::string(argv[i]) == "--fault" && i + 1 < argc)
+        {
+            std::string m = argv[++i];
+            if      (m == "none")      fault = FaultKind::none;
+            else if (m == "acc_nan")   fault = FaultKind::acc_nan;
+            else if (m == "acc_zero")  fault = FaultKind::acc_zero;
+            else if (m == "acc_sat")   fault = FaultKind::acc_sat;
+            else if (m == "gyro_nan")  fault = FaultKind::gyro_nan;
+            else { std::printf("未知 --fault 模式: %s\n", m.c_str()); return 1; }
         }
         else if (!data_path) data_path = argv[i];
         else if (!csv_path)  csv_path  = argv[i];
@@ -124,6 +142,7 @@ int main(int argc, char** argv)
     double yaw_err0 = 0, yaw_errN = 0;
     double sum_y = 0, max_y = 0;          // 有外部航向时的 yaw RMSE/MAX（相对真值）
     size_t n_heading_used = 0;                // 实际被估计器采纳的参考帧数
+    size_t n_fault = 0;                       // 注入的脏帧数（批次 4a-5）
     const size_t n = rows.size();
 
     std::FILE* csv = csv_path ? std::fopen(csv_path, "w") : nullptr;
@@ -134,6 +153,19 @@ int main(int argc, char** argv)
     {
         // 坐标系适配：数据集 acc 是世界系 z-down 约定，本 core 是 z-up → 取反
         measure::IMUSample s{-rows[i].acc_, rows[i].gyro_};
+        // 批次 4a-5 验收：故障注入（每 kFaultPeriod 帧一帧脏数据）
+        if (fault != FaultKind::none && i > 0 && i % kFaultPeriod == 0)
+        {
+            switch (fault)
+            {
+                case FaultKind::acc_nan:  s.acc_  = Vec3f(NAN, NAN, NAN);    break;
+                case FaultKind::acc_zero: s.acc_  = Vec3f(0.0f, 0.0f, 0.0f); break;
+                case FaultKind::acc_sat:  s.acc_  = Vec3f(0.0f, 0.0f, 9.0f);  break;   // 9 g 饱和
+                case FaultKind::gyro_nan: s.gyro_ = Vec3f(NAN, NAN, NAN);    break;
+                default: break;
+            }
+            ++n_fault;
+        }
         est.observe(s);
 
         // 批次 4a：外部航向注入（用真值 yaw 列当"理想里程计"）
@@ -192,6 +224,8 @@ int main(int argc, char** argv)
                     rms_y, max_y, yaw_drift, n_heading_used);
     if (csv)
         std::printf("CSV 已导出: %s（供画图：t/roll/pitch/yaw/gt_*，单位度）\n", csv_path);
+    std::printf("守门人: 注入脏帧 %zu 帧，拦截 %u 帧%s\n", n_fault, est.rejected_count(),
+                n_fault ? (est.rejected_count() == n_fault ? "（全部拦下 ✓）" : "（★ 有漏网）") : "");
 
     // 验收：roll/pitch RMSE 有界（真值对照）
     bool ok = rms_r < 5.0 && rms_p < 5.0;

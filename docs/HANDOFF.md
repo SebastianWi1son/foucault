@@ -1,6 +1,6 @@
-# HANDOFF.md — 交接文档（2026-08-30 生成）
+# HANDOFF.md — 交接文档（2026-09-13 冻结时更新）
 
-> 用途：用户准备刷机（H7 板），本文件供下一个 agent 零上下文快速接手。
+> 用途：项目在「批次 4a-5 完成」后**冻结**，等硬件就位复工。本文件供下一个 agent / 未来的自己零上下文快速接手。
 > **开工前必读：本文件 + AGENT.md**；冲突时以 AGENT.md 与 docs/ 文档体系为准。
 
 ---
@@ -9,109 +9,131 @@
 
 **foucault = 通用可移植姿态解算算法核心**（C++17、零依赖、core 禁 STL/异常/RTTI/动态内存）：
 可插拔增益求解器（Mahony 现役 → EKF 后续）× 可裁剪维度（2D/2.5D/3D，当前仅 3D）× 可注入量测源
-（6 轴现役 / 外部 yaw 下一批 / 9 轴磁力计大概率出局），目标 STM32H7，
-场景：云台 / 地面小车 / 立体步兵。**当前主线 = 平面+斜坡小车 + 里程计 yaw**。
+（6 轴 acc+gyro 现役 / 外部航向已落地 / 9 轴磁力计出局），目标 **STM32H743XBH6**，
+场景：云台 / 地面小车 / 立体步兵。**当前主线 = 2.5D 四麦轮小车 + 定时器增量式编码器里程计**。
+
+**硬件（2026-09-13 用户确认）**：MCU **STM32H743XBH6**（480MHz Cortex-M7 + 双精度 FPU + D-cache）；
+IMU **ICM-20602**（SPI，±2g / ±250~2000dps）；**4 路增量式编码器走定时器**；调试 **串口**。
+> ⚠️ 硬件尚未就绪 —— 这正是本次冻结的原因。
 
 ## 2. 用户（wilson）工作模式（铁律，违反 = 返工）
 
-1. **全程中文**；先讲原理（最土的话 + 类比）；**决策点前置**（列表 + 推荐）→ 用户确认 → 落文档
-2. **AI 默认只读源码**：用户抄录 docs/CODE.md 代码进源文件；测试/CMake/回放工具由 AI 写（用户授权）
-3. **CODE.md 是唯一施工来源**（代码必须 ```cpp 围栏内）；**文档 = 归档非讨论载体**（答疑在对话）
-4. 覆盖/删除前必须可回退（git 已提交 / /tmp 备份），三者皆无 = 禁止
-5. **commit 由用户主导**（2026-08-30 定案）：AI 默认不 commit；message 用用户看得懂的中文
-6. **外部输入先验证**（坐标系/单位/列顺序；教训见复盘.md）
-7. 未完成批次不算完成：改完必回归编译 + 全量 ctest
+1. **全程中文**；先讲原理（最土的话 + 类比，见 `答疑.md` 的三行式：物理 → 数学 → 代码）；
+   **决策点前置**（列表 + 推荐）→ 用户确认 → 落文档
+2. **AI 默认只读源码**：用户抄录 `docs/CODE.md` 代码进源文件
+3. **测试归 AI**（2026-09-13 用户定案）：`tests/`、`host/replay/`、CMake 测试配置由 AI 直接改仓库并验证
+4. **`CODE.md` 是唯一施工来源**；**代码块 = 改动定位图，不是粘贴源**（2026-09-13 定案）：
+   旧注释剥掉、只在改动处留 `★批次号` 标记 → 用户**逐段替换**，不整文件覆盖
+5. **文档 = 归档非讨论载体**；**决策进 DESIGN，行动进待办**；**文档与代码不一致 = 缺陷**
+6. 覆盖/删除前必须可回退（git 已提交 / `/tmp` 备份），三者皆无 = 禁止
+7. **commit 由用户主导**：AI 默认不 commit；message 用中文且用户看得懂
+8. 笔记（Obsidian vault `~/Develop/Notes/Projects/Foucault/`）**属工作手册范围，AI 只读**；
+   AI 生成的图/文档**一律另起新文件**，严禁覆盖用户笔记
+9. 未完成批次不算完成：改完必回归**三档编译 + 全量 ctest + 回放金标**
 
-## 3. 当前状态（验收全绿）
+## 3. 当前状态（2026-09-13 冻结，验收全绿）
 
-- git：唯一提交 `1360d9d`「里程碑：批次 1-3 完成，Mahony 可独立跑」，main 分支
-- ctest 4/4：test_math 21 / test_mahony 4 / test_estimator 4 / replay_nav2（真实数据回归）
-- 回放指标（NAV2 数据集 320s@50Hz，6 轴 acc+gyro）：roll RMSE 2.15° / pitch RMSE 2.65° / yaw 漂移 −14.5°
-- ⚠️ **工作区 3 个未提交改动**（commit 由用户主导，等他发话）：
-  ① docs/待办.md ② .gitignore（课程工程条目清理）③ **Scene→Dimension 全套改名**（config/estimator/测试/回放/文档）
+- **分支** main；**已提交** `8ae5534`（4a-4 微调）→ 冻结提交见 §7
+- **三档编译全零告警**：默认 `-Wall -Wextra -Werror` / 严格 `-Wconversion -Wshadow -pedantic -fno-exceptions -fno-rtti` / ASan+UBSan
+- **ctest 5/5**：`test_math` 22 / `test_math_audit` **125** / `test_mahony` **24 条断言（23 锚点 + 17a 前置）** / `test_estimator` 6
+- **回放金标**（NAV2 数据集 320s@50Hz，6 轴 acc+gyro）：
+  ```
+  基线    : roll RMSE 2.152° MAX 12.167° / pitch 2.645° MAX 13.510° / yaw 漂移 −14.450°
+  -y gt   : yaw RMSE 0.085° MAX 0.701°      漂移 −0.022°
+  -y gt_slow:     0.095°      0.998°              −0.024°
+  -y gt_noisy:    1.266°      2.051°              −1.121°
+  -y gt_drop:     0.385°      2.392°              −0.022°
+  ```
+- **故障注入验收**（`--fault`，每 100 帧一帧脏数据，共 159 帧）：
+  `acc_nan` / `acc_zero` / `acc_sat` / `gyro_nan` → **全部拦下 159/159**，RMSE 均为基线 2.152°
+  （拆掉守门人时 `acc_nan` / `gyro_nan` 的 RMSE = **nan**，永久损坏）
 
 ## 4. 代码地图（★ = 用户抄录，AI 只读需授权；☆ = AI 写）
 
 | 文件 | 内容 | 状态 |
 |---|---|---|
-| `core/math/{scalar_ops,vec3,quat}.hpp` ★ | 数学内核（inv_sqrt/clamp/deg_to_rad、Vec3、Quat：integrate/from_euler/to_euler/rotate） | ✅ 验收 |
-| `core/solver/{mahony.hpp,mahony.cpp}` ★ | Mahony：predict/observe/update/reset；成员 cfg_/q_/e_int_/e_last_/is_meas_ | ✅ 验收 |
-| `core/measure/measure.hpp` ★ | `IMUSample{acc_, gyro_}`（**注意：全大写 IMU 是用户命名，勿改回**） | ✅ 验收 |
-| `core/config.hpp` ★ | `Dimension{d2,d25,d3}` + `make_mahony_config()`（2026-08-30 用户定案弃产品枚举 Scene） | ✅ 验收 |
-| `core/estimator.hpp` ★ | 门面 `template<Solver=Mahony>`：predict/observe/observe_heading（**空占位**）/reset/quaternion/euler | ✅ 验收 |
-| `tests/unit/test_{math,mahony,estimator}.cpp` ☆ | 三套锚点测试 | ✅ 验收 |
-| `host/replay/replay_nav2.cpp` ☆ | 回放工具（读 data/NAV2_data.bin，输出 RMSE 报告 + 可选 CSV） | ✅ 验收 |
-| `data/` | NAV2 数据集（文本 12 列：acc3 gyro3 mag3 真值 euler3；**世界系 z-down → 喂入前 acc 取反**） | ✅ 入库 |
-| `reference/` | 4 个只读参考库（各自 .git；CLion 已屏蔽见 .idea/vcs.xml；gitignore 排除不入库） | 只读 |
-| `docs/` | 00-README / RESEARCH / DESIGN（F1~F13 决策表）/ DEV（开工顺序）/ 复盘 / 待办 / CODE（施工文档） | — |
-| `.idea/vcs.xml` | 子仓库 VCS 已置 None（只显示 foucault 的 git log） | 本地配置 |
+| `core/math/{scalar_ops,vec3,quat}.hpp` ★ | 数学内核（`inv_sqrt`/`clamp`/**`wrap_pi`**、Vec3、Quat） | ✅ **已冻结**（守门测试 `test_math_audit`）|
+| `core/math/{mat3,mat6}.hpp` | EKF 前置（四元数→旋转矩阵） | ⬜ **不存在**（批次 4 EKF 时新增，不触动冻结文件）|
+| `core/solver/{mahony.hpp,mahony.cpp}` ★ | Mahony：`predict`/`observe`/`observe_heading`/`align_heading`/`update`/`reset`/品质查询 | ✅ 验收至 4a-5 |
+| `core/measure/measure.hpp` ★ | `IMUSample{acc_, gyro_}`（**全大写 IMU 是用户命名，勿改**） | ✅ 验收 |
+| `core/config.hpp` ★ | `Dimension{d2,d25,d3}` + `make_mahony_config()` | ⚠️ 三档参数仍是同一组（降维未实现）|
+| `core/estimator.hpp` ★ | 门面 `template<Solver=Mahony>` | ⚠️ 可插拔是假的（P0-1：config 反向依赖 solver）|
+| `tests/unit/*.cpp` ☆ | 四套测试（math / math_audit / mahony / estimator） | ✅ 验收 |
+| `host/replay/replay_nav2.cpp` ☆ | 回放工具（`-y none\|gt\|gt_slow\|gt_noisy\|gt_drop` + `--fault`） | ✅ 验收 |
+| `data/` | NAV2 数据集（文本 12 列；**世界系 z-down → 喂入前 acc 取反**） | ✅ 入库 |
+| `reference/` | 4 个只读参考库（各自 .git，不入库） | 只读 |
+| `docs/` | DESIGN（权威）/ CODE（施工）/ 答疑 / DEV / HANDOFF / 待办 | — |
 
 ## 5. 关键决策速查（详表见 DESIGN.md §5）
 
-- **F10** namespace 子分层 `foucault::{math, measure, solver}`；**F11** 决策编号入代码注释
-- **F12** 成员统一尾下划线（x_/q0_/e_int_），**无条件**、struct/class 不作区分；参数与局部**不带** `_`；函数/变量 snake_case；bool 用 `is_` 前缀 + 尾下划线（用户风格）
-- **F13** 门面 = 模板策略；config 暴露数学抽象 Dimension（产品语义属应用层，映射靠注释）
-- **本质公式**：q̂̇ = ½·q̂⊗(ω−b̂) + K·(z−h(q̂))；Mahony = K 折进角速度（PI 控制器，Ki·∫e = 零偏估计）
-- 世界系 **z-up**（g_world=(0,0,1)）；欧拉角 = 内旋 ZYX（to_euler 返回 (roll,pitch,yaw) rad）
-- 6 轴下 yaw 不可观 → yaw 漂移是预期行为；**观测入口 observe_heading() 已预留（F4）**
-- **传感器配置（用户 2026-08-30 确认）**：里程计确定有 / 视觉待定 / 磁力计大概率没有 → 主线 6 轴 + 外部 yaw 注入
-- 保留模板的理由：实例化后零开销 / 桌面 double 回放排查数值 / 纯 float 项目先例
+**架构**
+- 门面 = **模板策略**（F13），无虚函数；namespace 子分层 `foucault::{math, measure, solver}`（F10）
+- **保留 `predict` 命名**（F14）：Mahony 把修正折进 ω，**没有独立的 `correct()`**（observe ≠ correct）
+- **可插拔抽象线画在"数据进/结果出"**：core 门面入口**专用**（编译期类型安全、零开销），
+  **可信度语义统一**（每入口都有 `trust`）；外部仲裁器才用统一载荷 `Measurement`（在 core 之上）
+- **按数学形式切分**量测（①向量观测 ②标量航向 ③位姿/速度），**不按传感器种类**
 
-## 6. 下一步任务：批次 4a — Mahony 外部 yaw 注入（方案已提交，待用户确认）
-
-> ⚠️ **本节为 2026-08-30 原稿，已过时**。最新版见 **`DESIGN.md §3.7`**（已吸收 P0-4 禁用布尔闩锁、F14 trust 通道等后续结论）。
-> 尤其注意：本节 D6 的 `is_yaw_meas_` 布尔标志**已被判定为 P0-4 同类缺陷**，改法见 DESIGN §3.7.5。
-
-**下个 agent 第一步**：向用户确认下面 D1~D7（用户回复"你来/确认"即视为定案），然后：
-写 CODE.md 批次 4a（用户抄 3 处）→ AI 写测试/回放 → 回归验收。完整方案：
-
-- **原理**：`ω_corrected = ω + Kp·e_acc + Ki·∫e_acc + Kp_heading·e_heading·v̂`
-  （v̂ = 预测重力方向 = 世界 z 在机体系表达，observe 里已有；e_heading = wrap(ψ_ref + offset − ψ_est)）
-- **D1** yaw 修正沿 v̂ 方向（绕重力轴转，斜坡不耦合 roll/pitch）——**不要**直接加机体系 z
-- **D2** yaw 纯 P 不进积分（里程计打滑会污染零偏估计；Ki 只对 acc 残差）
-- **D3** 首次观测自动对齐 `heading_offset_ = ψ_est − ψ_ref`；`reset()` 后重新对齐
-- **D4** e_heading wrap 到 (−π, π] 并 clamp ±π/2（防大跳变猛转）
-- **D5** `MahonyConfig` 加 `kp_heading_`（起步 5.0f，回放标定）
-- **D6** `is_yaw_meas_` 标志：无参考时行为不变（优雅降级）
-- **D7** 门面 observe_heading 从空占位改为转发 `solver_.observe_heading(heading_rad, dt)`
-
-改动面：`core/solver/mahony.hpp`（+observe_heading/+e_heading_/heading_offset_/v_/is_yaw_meas_/+kp_heading_）、
-`mahony.cpp`（observe_heading 实现 + predict 修正项 + reset 重置）、`core/estimator.hpp`（转发一行）——用户抄；
-`tests/unit/test_mahony.cpp`（新锚点：对齐/收敛/wrap 环绕/无参考不变）+ `host/replay/replay_nav2.cpp`
-（加 -y 选项：none|gt 理想里程计|gt_noisy|gt_slow 10Hz 间歇）——AI 写。
-
-**验收 4 项**（用 NAV2 真值 yaw 列当理想里程计，无需真实里程计）：
-① yaw 漂移 −14.5° → RMSE < 2° ② roll/pitch RMSE 不退化（< 5°，证明无耦合）
-③ 10Hz 间歇参考仍收敛 ④ 加噪参考不爆炸。
-
-## 7. 后续批次（原 DEV.md §5 顺序调整后）
-
-| 批次 | 内容 | 前置 |
-|---|---|---|
-| 4a | Mahony 外部 yaw 注入（本批） | 无 |
-| 4b | EKF + 卡方/渐消/量测仲裁 | **用户研究 Solà 论文后**（PDF 在 docs/） |
-| 5 | 2D/2.5D 维度模式 + kf_1d | 4b 后 |
-| 6 | platforms/arm_cmsis + H7 实测（对照参考库 Mahony 1.33µs / EKF 29.4µs） | — |
-| host 辅助 | allan（Allan 方差→Q/R）/ calib / plot / bench | 不急 |
-
-## 8. 常用命令与环境
-
-```bash
-cmake --build build && ctest --test-dir build --output-on-failure   # 全量回归
-./build/replay_nav2 data/NAV2_data.bin                               # 单跑回放
-./build/replay_nav2 data/NAV2_data.bin /tmp/out.csv                  # 导出 CSV 画图
+**Mahony 管线（批次 4a 系列成果）**
 ```
-- 编译：C++17；`-Wall -Wextra -Werror` 零告警；测试带 ASan/UBSan
-- git 全局已配（wilson / liaopanyi2020@gmail.com），唯一分支 main，无远端
-- 用户正在准备刷机（H7 板）——回来后可能咨询移植/硬件问题（批次 6 未开始；
-  参考库 `reference/CtrBoard-H7_IMU_Altitude` 是 H723 实测工程，含 Mahony 1.33µs / EKF 29.4µs 数据）
+predict(gyro, dt):
+    v̂ = q̂*·(0,0,1)                          ← 统一消费口（每周期只算一次）
+    ω = gyro + correction_acc(v̂,dt) + correction_heading(v̂)   ← 统一出口（不在线 = 加 0）
+    age += dt; q̂.integrate(ω, dt)
+```
+- **残差必须每周期现算，不得冻结**（4a-2）→ 否则等效增益随量测速率漂移
+- **门控失败 → 该项返回 0（加法幺元）**：从控制流分支降级为一次取值（4a-3）
+- **`v̂` 不提升为成员**：纯状态投影，与量测无关 → 两通道实现级解耦
+- **对齐 = 初始化，不是收集**（4a-4）：`align_heading()` 公开（只动航向零点，不动 roll/pitch）；
+  `observe_heading()` 首次自动兜底。`align_heading` 里 `heading_ref_ = heading_ref` **不可删**
+- **入口守门人**（4a-5）：脏帧 = "量测不作数" → 丢弃（不清年龄）→ 年龄门控自然接管（**零新状态**）
+- **命名分层**：`yaw` = 那个角（数学量/真值/误差）；`heading_*` = 处理那个角的通道/参考
 
-## 9. 已踩的坑（全文见复盘.md，开工前必读）
+**数值约定**
+- 世界系 **z-up**，`g_world = (0,0,1)`；欧拉角 = 内旋 ZYX（`to_euler` 返回 (roll,pitch,yaw) rad）
+- `q.rotate()` = **body → world**（实验 A/B/C 三重验证）
+- `Quat::normalize` 用位魔法 `inv_sqrt`（~4e-6）；`Vec3::normalize` 用精确 `1/sqrt`（~6e-8）——**有意的性能取舍**
+- `Quat::normalize` 只在 `n2 == 0` 时回退 identity；**NaN/Inf 原样传播**（脏值必须可见）
+- **`observe(acc)` 的输入单位 = g**（`acc_min_`/`acc_max_` 也是 g）；`acc_max_ = 2.0f` 对应 ±2g 量程
+- `MahonyConfig` 默认：`kp_ 5.0 / ki_ 0.3 / integral_limit_ 10.0 / acc_timeout_ 0.1 /
+  acc_min_ 0.5 / acc_max_ 2.0 / kp_heading_ 5.0 / heading_timeout_ 0.3`
+- 6 轴下 yaw 不可观 → 漂移是**预期行为**（唯一 yaw 基准是里程计）
 
-1. **数据集坐标系**：NAV2 数据集世界系 z-down（静止 acc=(0,0,−1)），core 是 z-up →
-   host 边界 `acc_adapted = −acc`，core 不动（首跑 roll RMSE 179° 的教训）
-2. **文档必须跟随用户实际代码**：用户会改命名（IMUSample、成员尾下划线 kp_/acc_）→ CODE.md 要同步 token 级一致
-3. **用户抄录常见笔误**：文件名拼错（estimater）、类名小写（solver::mahony）、成员名新旧混用 →
-   编译报错定位后只改错字，保留用户结构与注释
-4. **ctest Not Run ≠ 路径问题**：先查是否某 target 编译失败连带（replay 曾因链接漏 mahony.cpp 而 Not Run）
-5. **CLion 嵌套仓库**：reference 各库自带 .git 会被注册为 VCS 根 → .idea/vcs.xml 置 vcs="" 屏蔽
+**测试约定**
+- **判别测试必须断言"被改动的行为"**，而不是"调用某函数后某状态没变"——后者可能是**恒真断言**
+  （教训：`align_heading` 第 15 条初版；见 CODE.md 批次 4a-4）
+- 每条新测试都要验证**判别力**（把目标改动拆掉 → 必须 FAIL）
+
+## 6. 下一步任务（复工清单）
+
+**★ 分水岭：批次 4a′ 上车实测** —— 在拿到真实麦轮数据之前，任何"仲裁要多复杂"的判断都是猜测
+（`DESIGN §3.8.1` 已证明"模长门控"这种猜测几乎无效）。
+
+**硬件就位后的顺序**：
+
+1. **平台层移植**（`platforms/arm_cmsis` + CMake 交叉编译）—— 全量构建
+   - ⚠️ H743 有 **D-cache**：SPI-DMA 写入可缓存内存必须做 cache maintenance 或配 non-cacheable MPU 区
+   - ⚠️ 串口波特率：1kHz IMU + 4 路编码器全量落盘，115200 远远不够
+2. **数据记录通路**（★ 4a′ 的唯一前提）：能 dump 成文件的
+   `acc(3) + gyro(3) + 时间戳` 与 `4×轮计数 + 时间戳` → 塞进现有 replay 流程离线分析
+3. **真值方案**：实车没有 gt 列。需定：闭环法（跑回起点看漂移）/ 场地标记 / 只做相对一致性
+4. **跑代表性动作**：直行 / 原地转 / 急停 / 上坡 / **故意打滑**（打滑数据是 4b 仲裁的唯一输入）
+5. **批次 4b 量测仲裁**（数据驱动，**不提前做**）：打滑检测（`ω_odom` vs `ω_gyro` 主判据 +
+   4 轮自洽性超定冗余）、残差门控、静止检测、卡方、时变 `trust`
+6. **批次 5**：2.5D 维度模式 + EKF（建议合并；`mat3.hpp`/`mat6.hpp` 前置）
+
+**沿途可顺手清的债**（`docs/待办.md`）：
+P0-1 门面可插拔是假的 / P0-2 量测模型硬编码重力 / P0-3 门面签名与 DESIGN 不一致 /
+P2-2 缺 `-fno-exceptions -fno-rtti` + replay 无 sanitizer / P2-3 文档结构树把"计划"当"已存在" 等
+
+## 7. 冻结说明（2026-09-13）
+
+**冻结原因**：批次 4a-5（入口守门人）完成 —— 至此 **4a 系列全部落地**，
+「小车能上车的最小闭环」在**纯软件层面已走完**，剩下的都依赖硬件（`DESIGN §3.9`）。
+
+**冻结基线**：本次提交 + 全绿验收（§3）。
+**复工触发器**：H743 板 + 麦轮小车 + ICM-20602 + 4 路编码器 + 串口通路就绪。
+
+**复工第一步**：读本文件 → 读 `AGENT.md` → 跑一遍 §3 的全量验收（确认基线未漂移）→ 从 §6 第 1 步开始。
+
+> ⚠️ **`/tmp` 会被清理**：构建目录、`/tmp/fgd*` 等验证副本都不保证存在，复工时重新 `cmake -S . -B build`。
+> ⚠️ **本次冻结期间不得改 `core/math/`**（已冻结），除非走"解冻一次"流程并同步补守门测试。

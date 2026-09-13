@@ -12,6 +12,10 @@ struct MahonyConfig {
     float ki_ = 0.3f;               ///< Accelerometer integral gain (gyro bias estimate).
     float integral_limit_ = 10.0f;  ///< Integral term clamp [rad/s].
     float acc_timeout_ = 0.1f;      ///< Accelerometer residual validity [s].
+
+    float acc_min_ = 0.5f;          ///< Accepted |acc| lower bound [g]; rejects dead sensor / free-fall.
+    float acc_max_ = 2.0f;          ///< Accepted |acc| upper bound [g]; rejects saturation.
+
     float kp_heading_ = 5.0f;       ///< Heading proportional gain (P only, not integrated).
     float heading_timeout_ = 0.3f;  ///< Heading reference validity [s].
 };
@@ -36,7 +40,8 @@ public:
     void predict(const math::Vec3f& gyro, float dt);
 
     /// @brief Store an accelerometer sample (direction only, normalized internally).
-    /// @param acc Raw reading, any unit/scale
+    /// @note Samples failing the input guards are dropped and counted, not stored.
+    /// @param acc Raw reading in [g]; |acc| must lie in [acc_min_, acc_max_]
     void observe(const math::Vec3f& acc);
 
     /// @brief Store an external heading reference.
@@ -67,6 +72,10 @@ public:
     /// @brief True while the heading reference is fresh; false = yaw on gyro only.
     bool is_heading_valid() const;
 
+    /// @brief Input frames rejected by the guards (NaN/Inf, |acc| out of range, dt <= 0).
+    /// @note Counted since construction or the last reset(); a rising count means a dying sensor.
+    unsigned rejected_count() const;
+
 private:
     static constexpr float k_never_measured_ = 1.0e6f;
 
@@ -80,6 +89,7 @@ private:
     math::Vec3f e_int_;                         // integral (零偏估计)
     math::Vec3f acc_;                           // 最近一次有效 acc 量测（已归一化，只存方向）
     float acc_age_ = k_never_measured_;         // 距离上一次有效acc量测时间间隔
+    unsigned rejected_count_ = 0;
 
     float heading_ref_ =0.0f;                       // 最近的一次航向参考
     float heading_offset_ = 0.0f;                   // 首次观测的自动对齐量

@@ -1,5 +1,5 @@
 #include "mahony.hpp"
-
+#include <cmath>
 #include "../math/scalar_ops.hpp"
 
 namespace foucault::solver {
@@ -8,6 +8,10 @@ namespace foucault::solver {
 namespace {
     constexpr math::Vec3f k_gravity_world(0.0f, 0.0f, 1.0f);      // 世界系重力方向
     constexpr float k_half_pi = 1.5707963267948966f;                    // 航向残差限幅
+
+    bool is_finite(const math::Vec3f& v) {
+        return std::isfinite(v.x_) && std::isfinite(v.y_) && std::isfinite(v.z_);
+    }
 }
 
 // ----- constructor -----
@@ -19,6 +23,7 @@ void Mahony::reset() {
     e_int_ = math::Vec3f(0, 0, 0);
     acc_ = math::Vec3f(0, 0, 0);
     acc_age_ = k_never_measured_;
+    rejected_count_ = 0;
     reset_heading_channel();
 }
 
@@ -28,16 +33,22 @@ void Mahony::reset(const math::Quatf& q) {
     e_int_ = math::Vec3f(0, 0, 0);
     acc_ = math::Vec3f(0, 0, 0);
     acc_age_ = k_never_measured_;
+    rejected_count_ = 0;
     reset_heading_channel();
 }
 
 void Mahony::predict(const math::Vec3f& gyro, float dt) {
+    // ----- dirty data gating -----
+    if (!(dt > 0.0f)) { ++rejected_count_; return; }
     // 【统一消费口】v̂ = q̂*·(0,0,1)：重力方向在机体系里的表达，本周期只算一次，两个通道共用
     //   它是【纯状态投影】——只由 q̂ 决定，不需要任何量测，所以谁先谁后都拿得到同一个值
     const math::Vec3f v = q_.conjugated().rotate(k_gravity_world);
     // 【统一出口】每通道产出一个角速度修正项，通道不在线则为 0（加法幺元）
     //   Mahony 的架构特性：所有修正都折进角速度 → 没有独立的 correct 步骤
-    const math::Vec3f omega = gyro
+
+    math::Vec3f gyro_ok = gyro;
+    if (!is_finite(gyro_ok)) { gyro_ok = math::Vec3f(0.0f, 0.0f, 0.0f); ++rejected_count_; }
+    const math::Vec3f omega = gyro_ok
                           + correction_acc(v, dt)
                           + correction_heading(v);
 
@@ -47,6 +58,12 @@ void Mahony::predict(const math::Vec3f& gyro, float dt) {
 }
 
 void Mahony::observe(const math::Vec3f& acc) {
+    // ----- dirty data gating -----
+    if (!is_finite(acc)) { ++rejected_count_; return; }                      // NaN / ±Inf
+    const float n2 = acc.norm_squared();                                     // 输入单位是 g
+    if (n2 < cfg_.acc_min_ * cfg_.acc_min_ ||
+        n2 > cfg_.acc_max_ * cfg_.acc_max_) { ++rejected_count_; return; }   // 传感器死掉 / 饱和
+
     acc_ = acc;
     acc_.normalize();                                         // only fetch direction
     acc_age_ = 0.0f;                                       // acc_age_唯一清零口
@@ -76,6 +93,7 @@ void Mahony::update(const math::Vec3f& gyro, const math::Vec3f& acc, float dt) {
 // ----- ref valid check -----
 bool Mahony::is_acc_valid() const { return acc_age_ <= cfg_.acc_timeout_; }
 bool Mahony::is_heading_valid() const { return heading_age_ <= cfg_.heading_timeout_; }
+unsigned Mahony::rejected_count() const { return rejected_count_; }
 
 // ----- typical output -----
 const math::Quatf& Mahony::quaternion() const { return q_; }

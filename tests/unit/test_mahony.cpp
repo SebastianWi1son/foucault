@@ -1,5 +1,6 @@
 // foucault tests/unit/test_mahony.cpp —— Mahony 求解器行为测试（AI 编写）
 // 锚点（F3）：静止保持、恒定横滚收敛、纯积分、复位 | 批次 4a：航向注入（漂移/锁定/跟随/对齐/失效/正交）
+// 批次 4a-5：脏数据守门人（NaN / 全零 / 饱和 / dt 非法 / 干净数据零干预）
 #include <cmath>
 #include <cstdio>
 #include "solver/mahony.hpp"
@@ -278,6 +279,91 @@ int main()
         const Vec3f end = f.euler();
         expect(no_jump && std::fabs(end.z_ - 0.8f) < 3e-2f && std::fabs(end.x_ - 0.2f) < 2e-2f,
                "15) 手动重新对齐：参考空窗期不跳变 → 跟踪新参考（0.3→0.8），roll/pitch 不受扰");
+    }
+
+    // ═══════════════ 批次 4a-5：脏数据守门人 ═══════════════
+    // 16) NaN 量测一律丢弃（不污染状态）
+    {
+        solver::Mahony f;
+        for (int i = 0; i < 100; ++i) { f.observe(Vec3f(0, 0, 1)); f.predict(Vec3f(0, 0, 0), DT); }
+        const float yaw0 = f.euler().z_;
+        const float nan = std::nanf("");
+        for (int i = 0; i < 50; ++i)
+        {
+            f.observe(Vec3f(nan, nan, nan));                 // 脏 acc
+            f.predict(Vec3f(nan, nan, nan), DT);             // 脏 gyro（dt 合法）
+        }
+        const Vec3f e = f.euler();
+        const bool finite = std::isfinite(e.x_) && std::isfinite(e.y_) && std::isfinite(e.z_);
+        // 判别：无守门人时 q_ 直接变 NaN（回放实测 roll RMSE = nan）
+        expect(finite && f.rejected_count() == 100 && std::fabs(e.z_ - yaw0) < 1e-4f,
+               "16) 守门人：50 帧 NaN acc+gyro 全部丢弃（计数 100），状态保持有限且不漂");
+    }
+
+    // 17) acc = (0,0,0)（掉线读回全零）→ 拒绝 + 门控【自然】关闭
+    {
+        solver::Mahony f;
+        for (int i = 0; i < 100; ++i) { f.observe(Vec3f(0, 0, 1)); f.predict(Vec3f(0, 0, 0), DT); }
+        expect(f.is_acc_valid(), "17a) 前置：正常喂入时 acc 通道有效");
+        const unsigned c0 = f.rejected_count();
+        for (int i = 0; i < 20; ++i)                         // 20 帧 = 0.4s > acc_timeout_ 0.1s
+        {
+            f.observe(Vec3f(0, 0, 0));
+            f.predict(Vec3f(0, 0, 0), DT);
+        }
+        // 判别：无守门人时 Vec3::normalize 的零向量防御让 acc_=(0,0,0)
+        //       → 残差恒 0，但 acc_age_ 被清零 → is_acc_valid() 【谎报有效】（P1-1 静默失效）
+        expect(!f.is_acc_valid() && f.rejected_count() == c0 + 20,
+               "17) 守门人：acc 全零被拒 → 年龄继续增长 → 门控自然关闭（无守门人则谎报有效）");
+    }
+
+    // 18) |acc| 越界（饱和 / 过小）被拒，合格帧放行
+    {
+        solver::Mahony f;
+        for (int i = 0; i < 100; ++i) { f.observe(Vec3f(0, 0, 1)); f.predict(Vec3f(0, 0, 0), DT); }
+        const unsigned c0 = f.rejected_count();
+        f.observe(Vec3f(0, 0, 9.0f));          // 9 g 饱和（acc_max_ = 2 g）
+        f.observe(Vec3f(0, 0, 0.1f));          // 0.1 g 过小（acc_min_ = 0.5 g）
+        f.observe(Vec3f(0, 0, 1.0f));          // 1 g 合格
+        expect(f.rejected_count() == c0 + 2 && f.is_acc_valid(),
+               "18) 守门人：|acc| 越界（9g / 0.1g）被拒，合格帧放行并续期");
+    }
+
+    // 19) dt 非法（0 / 负 / NaN）→ 整帧不推进（时钟倒退防护）
+    {
+        solver::Mahony f;
+        for (int i = 0; i < 100; ++i) { f.observe(Vec3f(0, 0, 1)); f.predict(Vec3f(0, 0, 0), DT); }
+        const Vec3f before = f.euler();
+        const unsigned c0 = f.rejected_count();
+        f.predict(Vec3f(0.1f, 0, 0), 0.0f);                  // dt = 0
+        f.predict(Vec3f(0.1f, 0, 0), -DT);                   // dt < 0（时钟倒退）
+        f.predict(Vec3f(0.1f, 0, 0), std::nanf(""));         // dt = NaN
+        const Vec3f after = f.euler();
+        const bool same = std::fabs(after.x_ - before.x_) < 1e-6f
+                       && std::fabs(after.y_ - before.y_) < 1e-6f
+                       && std::fabs(after.z_ - before.z_) < 1e-6f;
+        // 判别：无守门人时 dt=NaN 会让 q_ 变 NaN；dt<0 会倒着积分
+        expect(same && f.rejected_count() == c0 + 3,
+               "19) 守门人：dt = 0 / 负 / NaN → 整帧不推进，姿态零变化（计数 +3）");
+    }
+
+    // 20) 干净数据零干预；reset() 清零计数
+    {
+        solver::Mahony f;
+        const Quatf q0 = Quatf::from_euler(0.2f, -0.1f, 0.3f);
+        const Vec3f acc = q0.conjugated().rotate(Vec3f(0, 0, 1));
+        f.reset(q0);
+        for (int i = 0; i < 500; ++i)
+        {
+            f.observe(acc); f.observe_heading(0.3f); f.predict(Vec3f(0, 0, 0), DT);
+        }
+        const bool clean = (f.rejected_count() == 0);        // 干净数据一帧不拦
+        const float nan = std::nanf("");
+        for (int i = 0; i < 3; ++i) { f.observe(Vec3f(nan, 0, 0)); }
+        const unsigned dirty = f.rejected_count();
+        f.reset();
+        expect(clean && dirty == 3 && f.rejected_count() == 0,
+               "20) 守门人：干净数据零干预（计数 0）；3 帧脏数据后 reset() 清零计数");
     }
 
     if (g_fail == 0)
