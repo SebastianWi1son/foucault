@@ -1,15 +1,15 @@
 # 构建产物
 build/
+# CLion（cmake-build-debug / cmake-build-release …）
+cmake-build-*/
 
 # IDE
 .idea/
 .vscode/
 
 # 只读参考库（各自独立仓库/巨大，不入库）
+# 含 2026-08-30 挪入的课程工程 Mahony-ICM42688-MMC5983（61M，含 rar/zip）
 reference/
-
-# 课程工程（61M，含 rar/zip 压缩包；用户决定挪入 reference/ 前不入库）
-Mahony-ICM42688-MMC5983/
 
 # 编译中间产物
 *.o
