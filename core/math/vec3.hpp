@@ -4,7 +4,6 @@
 
 namespace foucault::math {
 
-
 template <typename T>
 struct Vec3 {
     // --- internal member ---
@@ -12,9 +11,11 @@ struct Vec3 {
     // --- constructor ---
     constexpr Vec3() : x_(0), y_(0), z_(0) {}       // non‑parametric constructor
     constexpr Vec3(T x, T y, T z) : x_(x), y_(y), z_(z) {}    // 三参数构造
-    constexpr Vec3(T x) : x_(x), y_(x), z_(x) {}    // parameterized constructor
+    explicit constexpr Vec3(T x) : x_(x), y_(x), z_(x) {}   // 单值广播；explicit 防隐式转换（P1-3）
 
     // ----- operator reload -----
+    // ⚠ 下标越界【不做检查】：0/1 之外（含负数）一律返回 z_（P1-4）。
+    //   嵌入式取舍：调用方保证 0..2。要检查请在调用点做，别在这条热路径上加分支。
     T& operator[](int i) {
         switch (i) {
             case 0: return x_;
@@ -23,7 +24,8 @@ struct Vec3 {
         }
     }
 
-    const T& operator[](int i) const {  // why 2 similar func expr?
+    // 与上一个同构：const 版本返回 const 引用，供只读对象使用（不是重复代码）
+    const T& operator[](int i) const {
         switch (i) {
             case 0: return x_;
             case 1: return y_;
@@ -44,15 +46,15 @@ struct Vec3 {
 
 
     // ----- vector operations -----
-    // dot 点乘
+    // dot product
     T dot(const Vec3& other) const { return x_ * other.x_ + y_ * other.y_ + z_ * other.z_; }
-    // cross 叉乘
+    // cross product
     Vec3 cross(const Vec3& other) const {
         return Vec3(y_ * other.z_ - z_ * other.y_,
                     z_ * other.x_ - x_ * other.z_,
                     x_ * other.y_ - y_ * other.x_);
     }
-    // self-normalization  什么是归一化来着
+    // self-normalization（模长归一到 1；零向量保持零）
     T norm_squared() const { return x_ * x_ + y_ * y_ + z_ * z_; }
     T norm() const { return std::sqrt(norm_squared()); }
     Vec3& normalize() {
@@ -66,13 +68,10 @@ struct Vec3 {
 
 };
 
-// ???
+// 标量在左的乘法（T * Vec3），与成员 operator*(T) 对称
 template <typename T>
-inline Vec3<T> operator*(T scalar, const Vec3<T>& v) { return v *scalar; }
+inline Vec3<T> operator*(T scalar, const Vec3<T>& v) { return v * scalar; }
 
 using Vec3f = Vec3<float>;
 
-
-
-
-}
+}  // namespace foucault::math

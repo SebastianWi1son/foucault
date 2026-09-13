@@ -26,6 +26,20 @@ inline T inv_sqrt(T x) {
     else { return (T(1) / std::sqrt(x)); }
 }
 
+// 角度归一化到 [−π, π]：角度的【差分】必须 wrap，否则 179° 与 −179° 会算出 358° 造成猛转
+// 快路径：atan2 类角度的差分绝大多数已在范围内 → 零开销直接返回
+template <typename T>
+inline T wrap_pi(T a) {
+    const T pi = T(3.14159265358979323846);
+    if (a > pi || a < -pi) {
+        const T two_pi = T(2) * pi;
+        a = std::fmod(a + pi, two_pi);
+        if (a < T(0)) { a += two_pi; }
+        a -= pi;
+    }
+    return a;
+}
+
 template <typename T>
 inline T clamp(T v, T lo, T hi) { return (v < lo) ? lo : ((v > hi) ? hi : v);   }
 
