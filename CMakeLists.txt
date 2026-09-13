@@ -25,6 +25,17 @@ target_compile_options(test_math PRIVATE -fsanitize=address,undefined)
 target_link_options(test_math PRIVATE -fsanitize=address,undefined)
 add_test(NAME test_math COMMAND test_math)
 
+# ── core/math 独立审计测试（AI 编写 2026-09-12）──
+# 独立性：自写参考实现（4x4 矩阵 Hamilton 积 / Rodrigues 旋转）+ Python 生成金标数据
+# （生成器 tests/tools/gen_math_golden.py；头文件 tests/unit/math_golden.hpp 自动生成）
+# 盯住 core/math 转归档状态：改 math 目录时此 target 必须全绿
+add_executable(test_math_audit tests/unit/test_math_audit.cpp)
+target_link_libraries(test_math_audit PRIVATE foucault_core)
+target_include_directories(test_math_audit PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/unit)
+target_compile_options(test_math_audit PRIVATE -fsanitize=address,undefined)
+target_link_options(test_math_audit PRIVATE -fsanitize=address,undefined)
+add_test(NAME test_math_audit COMMAND test_math_audit)
+
 # ── 批次 2：Mahony 求解器（测试 AI 已写好；core/solver/ 抄录完成后取消注释即转绿）──
 add_executable(test_mahony tests/unit/test_mahony.cpp core/solver/mahony.cpp)
 target_link_libraries(test_mahony PRIVATE foucault_core)

@@ -1,6 +1,11 @@
 // foucault host/replay/replay_nav2.cpp —— NAV2 数据集回放对比（AI 编写，2026-08-30）
 //
-// 用法：replay_nav2 <数据集路径> [输出CSV路径]
+// 用法：replay_nav2 <数据集路径> [输出CSV路径] [-y 模式]
+//   -y none      不注入外部航向（默认，6 轴基线）
+//   -y gt        注入真值 yaw @50Hz（理想里程计）
+//   -y gt_slow   注入真值 yaw @10Hz（每 5 帧一次，验证多速率）
+//   -y gt_noisy  注入真值 yaw + σ=2° 噪声 @50Hz（验证不爆炸）
+//   -y gt_drop   50Hz，但 t∈[100,130)s 断线（验证 age 门控降级）
 // 数据集默认在 data/NAV2_data.bin（源：参考库 NAV2 数据集，reference/ 不入 git）
 //
 // 数据集格式（扩展名 .bin 实为文本）：每行 12 列，空格分隔
@@ -33,11 +38,21 @@ namespace {
 constexpr float kDt = 0.02f;      // 数据集采样周期（50Hz）
 constexpr float kDeg = 57.29578f; // rad → deg
 
+// 外部航向注入模式（批次 4a 验收）
+enum class HeadingMode { none, gt, gt_slow, gt_noisy, gt_drop };
+
+// 确定性伪随机（无需 <random>，保证回放可复现）
+inline float pseudo_noise(unsigned i) {
+    unsigned x = i * 1664525u + 1013904223u;      // LCG
+    x ^= x >> 16;
+    return (float)(x & 0xFFFFu) / 65535.0f * 2.0f - 1.0f;   // [-1,1]
+}
+
 struct Row
 {
-    Vec3f acc;
-    Vec3f gyro;
-    Vec3f gt;   // 真值 euler（rad）
+    Vec3f acc_;
+    Vec3f gyro_;
+    Vec3f gt_;   // 真值 euler（rad）
 };
 
 bool load_dataset(const char* path, std::vector<Row>& rows)
@@ -65,44 +80,86 @@ int main(int argc, char** argv)
 {
     if (argc < 2)
     {
-        std::printf("用法: replay_nav2 <数据集路径> [输出CSV路径]\n");
+        std::printf("用法: replay_nav2 <数据集路径> [输出CSV路径] [-y none|gt|gt_slow|gt_noisy|gt_drop]\n");
         return 1;
     }
 
-    std::vector<Row> rows;
-    if (!load_dataset(argv[1], rows))
+    // 解析 -y 模式 + 位置参数（数据集 / CSV）
+    HeadingMode heading_mode = HeadingMode::none;
+    const char* data_path = nullptr;
+    const char* csv_path = nullptr;
+    for (int i = 1; i < argc; ++i)
     {
-        std::printf("无法打开或解析数据集: %s\n", argv[1]);
+        if (std::string(argv[i]) == "-y" && i + 1 < argc)
+        {
+            std::string m = argv[++i];
+            if      (m == "none")     heading_mode = HeadingMode::none;
+            else if (m == "gt")       heading_mode = HeadingMode::gt;
+            else if (m == "gt_slow")  heading_mode = HeadingMode::gt_slow;
+            else if (m == "gt_noisy") heading_mode = HeadingMode::gt_noisy;
+            else if (m == "gt_drop")  heading_mode = HeadingMode::gt_drop;
+            else { std::printf("未知 -y 模式: %s\n", m.c_str()); return 1; }
+        }
+        else if (!data_path) data_path = argv[i];
+        else if (!csv_path)  csv_path  = argv[i];
+    }
+    if (!data_path) { std::printf("缺少数据集路径\n"); return 1; }
+
+    std::vector<Row> rows;
+    if (!load_dataset(data_path, rows))
+    {
+        std::printf("无法打开或解析数据集: %s\n", data_path);
         return 1;
     }
     std::printf("数据集: %zu 行 (%.1f s @50Hz)\n", rows.size(), rows.size() * kDt);
 
     // 初始对准：yaw 用真值起步（F5 外部指定模式；回放评估相对误差），
     // roll/pitch 由加速度计在头一秒内自然收敛
-    Estimator<> est(Scene::gimbal);
-    est.reset(math::Quatf::from_euler(0, 0, rows[0].gt.z_));
+    Estimator<> est(Dimension::d3);
+    est.reset(math::Quatf::from_euler(0, 0, rows[0].gt_.z_));
 
     // 统计量
     double sum_r = 0, sum_p = 0;
     double max_r = 0, max_p = 0;
     double yaw_err0 = 0, yaw_errN = 0;
+    double sum_y = 0, max_y = 0;          // 有外部航向时的 yaw RMSE/MAX（相对真值）
+    size_t n_heading_used = 0;                // 实际被估计器采纳的参考帧数
     const size_t n = rows.size();
 
-    std::FILE* csv = (argc > 2) ? std::fopen(argv[2], "w") : nullptr;
+    std::FILE* csv = csv_path ? std::fopen(csv_path, "w") : nullptr;
     if (csv)
         std::fprintf(csv, "t,roll,pitch,yaw,gt_roll,gt_pitch,gt_yaw\n");
 
     for (size_t i = 0; i < n; ++i)
     {
         // 坐标系适配：数据集 acc 是世界系 z-down 约定，本 core 是 z-up → 取反
-        measure::IMUSample s{-rows[i].acc, rows[i].gyro};
-        est.observe(s, kDt);
+        measure::IMUSample s{-rows[i].acc_, rows[i].gyro_};
+        est.observe(s);
+
+        // 批次 4a：外部航向注入（用真值 yaw 列当"理想里程计"）
+        bool feed_heading = false, gap = false;
+        float heading_ref = rows[i].gt_.z_;
+        switch (heading_mode)
+        {
+            case HeadingMode::none:     break;
+            case HeadingMode::gt:       feed_heading = true; break;
+            case HeadingMode::gt_slow:  feed_heading = (i % 5 == 0); break;          // 10Hz
+            case HeadingMode::gt_noisy: feed_heading = true;
+                                    heading_ref += pseudo_noise((unsigned)i) * 0.0349f;  // σ≈2°（幅 ±2°）
+                                    break;
+            case HeadingMode::gt_drop:  feed_heading = true;
+                                    gap = (i * kDt >= 100.0f && i * kDt < 130.0f);
+                                    break;
+        }
+        if (gap) feed_heading = false;
+        if (feed_heading) { est.observe_heading(heading_ref); ++n_heading_used; }
+
         est.predict(s, kDt);
         Vec3f e = est.euler();
 
-        double er = (e.x_ - rows[i].gt.x_) * kDeg;
-        double ep = (e.y_ - rows[i].gt.y_) * kDeg;
-        double ey = (e.z_ - rows[i].gt.z_) * kDeg;
+        double er = (e.x_ - rows[i].gt_.x_) * kDeg;
+        double ep = (e.y_ - rows[i].gt_.y_) * kDeg;
+        double ey = (e.z_ - rows[i].gt_.z_) * kDeg;
 
         sum_r += er * er;
         sum_p += ep * ep;
@@ -110,11 +167,13 @@ int main(int argc, char** argv)
         if (std::fabs(ep) > max_p) max_p = std::fabs(ep);
         if (i == 0) yaw_err0 = ey;
         if (i == n - 1) yaw_errN = ey;
+        sum_y += ey * ey;
+        if (std::fabs(ey) > max_y) max_y = std::fabs(ey);
 
         if (csv)
             std::fprintf(csv, "%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
                          i * kDt, e.x_ * kDeg, e.y_ * kDeg, e.z_ * kDeg,
-                         rows[i].gt.x_ * kDeg, rows[i].gt.y_ * kDeg, rows[i].gt.z_ * kDeg);
+                         rows[i].gt_.x_ * kDeg, rows[i].gt_.y_ * kDeg, rows[i].gt_.z_ * kDeg);
     }
     if (csv) std::fclose(csv);
 
@@ -125,12 +184,23 @@ int main(int argc, char** argv)
     std::printf("\n===== 回放报告（Estimator<Mahony>，6 轴 acc+gyro，%zu 行）=====\n", n);
     std::printf("roll : RMSE %6.3f°  MAX %6.3f°\n", rms_r, max_r);
     std::printf("pitch: RMSE %6.3f°  MAX %6.3f°\n", rms_p, max_p);
-    std::printf("yaw  : 漂移 %+7.3f°（初始偏差已扣除；6 轴下 yaw 不可观，漂移为预期行为）\n", yaw_drift);
+    double rms_y = std::sqrt(sum_y / n);
+    if (heading_mode == HeadingMode::none)
+        std::printf("yaw  : 漂移 %+7.3f°（初始偏差已扣除；6 轴下 yaw 不可观，漂移为预期行为）\n", yaw_drift);
+    else
+        std::printf("yaw  : RMSE %6.3f°  MAX %6.3f°  漂移 %+7.3f°（外部航向已注入，%zu 帧参考）\n",
+                    rms_y, max_y, yaw_drift, n_heading_used);
     if (csv)
-        std::printf("CSV 已导出: %s（供画图：t/roll/pitch/yaw/gt_*，单位度）\n", argv[2]);
+        std::printf("CSV 已导出: %s（供画图：t/roll/pitch/yaw/gt_*，单位度）\n", csv_path);
 
-    // 验收：roll/pitch RMSE 有界（真值对照），yaw 不判失败
+    // 验收：roll/pitch RMSE 有界（真值对照）
     bool ok = rms_r < 5.0 && rms_p < 5.0;
-    std::printf("\n[%s] roll/pitch RMSE < 5° 验收%s\n", ok ? "PASS" : "FAIL", ok ? "" : "（不通过，需排查）");
+    std::printf("\n[%s] ① roll/pitch RMSE < 5°（无退化）\n", ok ? "PASS" : "FAIL");
+    if (heading_mode != HeadingMode::none)
+    {
+        bool ok_y = rms_y < 2.0;
+        ok = ok && ok_y;
+        std::printf("[%s] ② yaw RMSE < 2°（当前 %.3f°）\n", ok_y ? "PASS" : "FAIL", rms_y);
+    }
     return ok ? 0 : 1;
 }
