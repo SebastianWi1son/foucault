@@ -11,7 +11,7 @@ foucault/
 ├── AGENT.md                    # 代理规则（含本文档索引）
 ├── CMakeLists.txt              # ✅ AI 编写；test_math/mahony/estimator + replay_nav2 四 target
 ├── core/
-│   ├── config.hpp              # ✅ 批次 3 已抄录（Scene + make_mahony_config）
+│   ├── config.hpp              # ✅ 批次 3 已抄录（Dimension + make_mahony_config，2026-08-30 用户定案改）
 │   ├── estimator.hpp           # ✅ 批次 3 已抄录（门面，模板插拔；抄时拼成 estimater 已改名）
 │   ├── math/
 │   │   ├── scalar_ops.hpp      # ✅ AI 修复完成（2026-08-30）：删残留行 + snake_case
@@ -20,8 +20,8 @@ foucault/
 │   ├── measure/
 │   │   └── measure.hpp         # ✅ 批次 3 已抄录（IMUSample，acc_/gyro_）
 │   └── solver/
-│       ├── mahony.hpp          # ✅ 已抄录（is_meas_/constexpr 用户改进，已同步文档）
-│       └── mahony.cpp          # ✅ 已抄录（update 签名 2 处笔误已修；kp_/ki_ 成员名已对齐）
+│       ├── mahony.hpp          # ✅ 已抄录；【批次 4a-1 待重抄】is_meas_ → acc_age_ 年龄计数器
+│       └── mahony.cpp          # ✅ 已抄录；【批次 4a-1 待重抄】同上（3 处改动）
 ├── host/
 │   └── replay/
 │       └── replay_nav2.cpp     # ✅ AI 已写（NAV2 回放，真实数据验收 PASS）
@@ -75,26 +75,26 @@ foucault/
 
 namespace foucault::math {
 
-// 快速倒数开方 1/sqrt(x_)
+// 快速倒数开方 1/sqrt(x)
 // float：经典位魔法（0x5f3759df）+ 两轮牛顿迭代，MCU 上比除法快
 // double：直接走标准库（double 用得少，不值得优化）
 template <typename T>
-inline T inv_sqrt(T x_)
+inline T inv_sqrt(T x)
 {
     if constexpr (std::is_same_v<T, float>)
     {
-        float y_ = x_;
+        float y = x;
         std::int32_t i;
-        std::memcpy(&i, &y_, sizeof(i));        // 把 float 的位模式当整数读
+        std::memcpy(&i, &y, sizeof(i));        // 把 float 的位模式当整数读
         i = 0x5f3759df - (i >> 1);             // 魔法常数：一次好的初始猜测
-        std::memcpy(&y_, &i, sizeof(y_));
-        y_ = y_ * (1.5f - 0.5f * x_ * y_ * y_);     // 牛顿迭代第 1 轮
-        y_ = y_ * (1.5f - 0.5f * x_ * y_ * y_);     // 牛顿迭代第 2 轮
-        return y_;
+        std::memcpy(&y, &i, sizeof(y));
+        y = y * (1.5f - 0.5f * x * y * y);     // 牛顿迭代第 1 轮
+        y = y * (1.5f - 0.5f * x * y * y);     // 牛顿迭代第 2 轮
+        return y;
     }
     else
     {
-        return T(1) / std::sqrt(x_);
+        return T(1) / std::sqrt(x);
     }
 }
 
@@ -117,7 +117,7 @@ inline T rad_to_deg(T rad) { return rad * T(57.29577951308232); }     // 180/π
 
 ```cpp
 #pragma once
-// foucault core/math: vec3.hpp —— 三维向量（POD 值类型，成员无尾下划线，F12）
+// foucault core/math: vec3.hpp —— 三维向量（值类型，成员统一尾下划线，F12）
 #include <cmath>
 
 namespace foucault::math {
@@ -128,7 +128,7 @@ struct Vec3
     T x_, y_, z_;
 
     constexpr Vec3() : x_(0), y_(0), z_(0) {}
-    constexpr Vec3(T x_, T y_, T z_) : x_(x_), y_(y_), z_(z_) {}
+    constexpr Vec3(T x, T y, T z) : x_(x), y_(y), z_(z_) {}   // 参数不带 _，只有成员带 _
     constexpr Vec3(T fill) : x_(fill), y_(fill), z_(fill) {}  // 标量填充
 
     T& operator[](int i)
@@ -227,6 +227,9 @@ struct Quat
     T norm() const { return std::sqrt(norm_squared()); }
 
     // 归一化：积分后必做（模长漂离 1 会让旋转"变形"）
+    // 异常输入：NaN 时【不做处理】，脏值原样传播（防御只应对付它认识的那一种输入）
+    // 旧版 `else { *this = identity(); }` 会把 NaN 静默洗成单位元 → 单帧脏量测永久废掉姿态
+    //（+Inf 走 if 分支 → 结果非有限值，明显异常可检出）
     Quat& normalize()
     {
         T n2 = norm_squared();
@@ -235,7 +238,7 @@ struct Quat
             T inv = inv_sqrt(n2);
             q0_ *= inv; q1_ *= inv; q2_ *= inv; q3_ *= inv;
         }
-        else
+        else if (n2 == T(0))
         {
             *this = identity();   // 防御：零四元数无意义，复位为单位元
         }
@@ -257,6 +260,8 @@ struct Quat
 
     // 旋转向量：v' = q ⊗ (0,v) ⊗ q*
     // （两侧各乘一次 → 半角编码的原因；下面是快速展开，不做完整两次乘法）
+    // ⚠ 快速展开式【仅当 |q| = 1】时等于 q⊗(0,v)⊗q*；非单位四元数下两者相差可观
+    //   （实测 |q|²=1.09 时输出模长 1.0161，而精确乘积应为 1.09）→ rotate 前必须归一化
     Vec3<T> rotate(const Vec3<T>& v) const
     {
         // 快速公式：v' = v + 2·q0_·(qv×v) + 2·qv×(qv×v)，其中 qv = (q1_,q2_,q3_)
@@ -265,8 +270,10 @@ struct Quat
         return v + t * q0_ + qv.cross(t);
     }
 
-    // 陀螺积分（一阶欧拉，= 一阶毕卡 = RK1）：
+    // 陀螺积分（名义一阶欧拉 = 一阶毕卡 = RK1，实测量化后为全局二阶）：
     //   q̇ = ½·q⊗(0,ω)  →  q += ½·q⊗(0,ω)·dt  →  归一化
+    // 二阶来源：归一化恰好消掉二阶项（纯四元数 x 有 x² = -|x|²），与 exp(½ω̂dt) 差 O(|x|³)
+    // 实测观测阶 p = 2.04（常角速度）/ 1.98（时变 ω）；见 tests/unit/test_math_audit.cpp F3
     // ω 必须是机体系角速度，单位 rad/s；dt 单位 s
     Quat& integrate(const Vec3<T>& omega, T dt)
     {
@@ -351,7 +358,7 @@ g++ -std=c++17 -Wall -Wextra -Werror -I core tests/unit/test_math.cpp -o /tmp/te
 2. **残差 e = 实测 × 预测**：加速度计实测方向 × 预测重力方向（叉积，小角度下 ∝ 姿态误差角）；
 3. **Ki·∫e = 零偏估计**（Mahony 版 b̂）：积分项限幅防饱和；
 4. **异步多速率（F4）**：`predict` 跟 IMU 速率（用最近一次残差），`observe` 事件驱动（量测到了才算残差）；
-5. 类内成员用尾下划线（`q_`/`e_int_`），Config 聚合（foc 范式）。
+5. 成员统一尾下划线（`q_`/`e_int_`），**struct / class 不作区分**（F12）；Config 聚合（foc 范式）。
 
 **先决条件**：批次 1 必须全绿（21 PASS）——本批用到 `rotate`（共轭旋转）、`integrate`、`normalize`、`cross`、`clamp`、`to_euler`。
 
@@ -505,9 +512,11 @@ AI 已写好 4 项行为锚点：静止保持零姿态、横滚 30° 加速度�
 1. **门面（Facade）**：给上层一个不变接口（predict/observe/reset/euler），算法怎么实现被藏起来。
    换算法只换模板参数：`Estimator<solver::Mahony>` → `Estimator<solver::EKF>`（批次 4），调用方代码一行不改；
 2. **模板默认参数**：`template <typename Solver = solver::Mahony>` —— 不写参数就是 Mahony；
-3. **Scene 档位**：云台/小车/步兵三场景起步参数相同，真正分档在 EKF 的 Q/R（批次 4）；
+3. **Dimension 档位**：d2/d25/d3 是数学抽象（状态空间大小），产品映射靠注释（地面小车→d2，云台/步兵→d3）；
+   当前三档起步参数相同，真正分档在 EKF 的 Q/R（批次 4）与维度模式（批次 5）；
+   （2026-08-30 用户定案：核心层只懂数学，产品语义属应用层，弃用产品枚举 Scene）
 4. **IMUSample**：把"一次传感器采样"打包成一个结构（acc 单位 g，gyro 单位 rad/s）；
-5. **observe_yaw 占位**：外部 yaw 注入接口（F4 设计），Mahony 不支持 → 空函数忽略，EKF 批实现。
+5. **observe_heading 占位**：外部 yaw 注入接口（F4 设计），Mahony 不支持 → 空函数忽略，EKF 批实现。
 
 **先决条件**：批次 2 全绿（test_mahony 4 PASS）。
 
@@ -534,23 +543,24 @@ struct IMUSample
 
 ```cpp
 #pragma once
-// foucault core/config.hpp —— 配置聚合 + 场景档位（F 级起步值，回放校准后更新）
+// foucault core/config.hpp —— 配置聚合 + 维度档位（F 级起步值，回放校准后更新）
 #include "solver/mahony.hpp"
 
 namespace foucault {
 
-// 场景档位：云台（低动态高精度）/ 地面小车（平面为主）/ 立体步兵（高动态）
-enum class Scene
+// 维度模式（数学抽象；核心层只懂数学，产品语义属应用层）
+// 产品映射（注释即文档）：地面小车 → d2；云台/立体步兵 → d3
+enum class Dimension
 {
-    gimbal,     // 云台
-    car,        // 地面小车
-    infantry,   // 立体步兵
+    d2,   // 2D：只估 yaw，平面运动（地面小车）—— 批次 5 落地
+    d25,  // 2.5D：平面运动 + 倾角 —— 批次 5 落地
+    d3    // 3D：全姿态（云台/立体步兵）—— 当前唯一实现
 };
 
-// 场景 → Mahony 配置（当前三档同起步值；真正分档在 EKF 的 Q/R，批次 4）
-inline solver::MahonyConfig make_mahony_config(Scene scene)
+// 维度 → Mahony 配置（当前各档同起步值；分档在 EKF 的 Q/R 批次 4 + 维度模式批次 5）
+inline solver::MahonyConfig make_mahony_config(Dimension dim)
 {
-    (void)scene;   // 本批三档同参数，EKF 批启用分档
+    (void)dim;   // 本批各档同参数，EKF 批启用分档
     solver::MahonyConfig cfg;
     cfg.kp_ = 5.0f;               // 比例增益（残差 → 角速度修正力度）
     cfg.ki_ = 0.3f;               // 积分增益（零偏估计）
@@ -568,7 +578,7 @@ inline solver::MahonyConfig make_mahony_config(Scene scene)
 // foucault core/estimator.hpp —— 估算器门面（统一接口，可插拔增益求解器）
 //
 // 设计（F10/F4）：模板参数 = 增益求解器策略（Mahony 现在，EKF 批次 4）；
-// 统一入口 predict/observe/observe_yaw；求解器不支持的量测自动忽略。
+// 统一入口 predict/observe/observe_heading；求解器不支持的量测自动忽略。
 #include "config.hpp"
 #include "math/quat.hpp"
 #include "math/vec3.hpp"
@@ -582,8 +592,8 @@ class Estimator
 {
 public:
     // 用场景档位构造（内部转换为对应求解器配置）
-    explicit Estimator(Scene scene = Scene::gimbal)
-        : solver_(make_mahony_config(scene))
+    explicit Estimator(Dimension dim = Dimension::d3)
+        : solver_(make_mahony_config(dim))
     {
     }
 
@@ -592,7 +602,7 @@ public:
     void observe(const measure::IMUSample& s, float dt) { solver_.observe(s.acc_, dt); }
 
     // 外部 yaw 注入（F4 设计）：Mahony 不支持，忽略；EKF 批实现
-    void observe_yaw(float /*yaw_rad*/, float /*dt*/) {}
+    void observe_heading(float /*heading_rad*/, float /*dt*/) {}
 
     void reset() { solver_.reset(); }
     void reset(const math::Quatf& q) { solver_.reset(q); }
@@ -607,10 +617,1085 @@ private:
 } // namespace foucault
 ```
 
-### 文件 10/11：测试与回放工具（AI 已写，无需抄录）
+---
 
-- `tests/unit/test_estimator.cpp`：4 项锚点（门面与直接调用 Mahony 等价、observe_yaw 无害、reset 指定姿态、Scene 构造）；
-- `host/replay/replay_nav2.cpp`：读参考库 NAV2 数据集（文本 12 列：acc3+gyro3+mag3+真值 euler3，弧度，50Hz）→ 跑 `Estimator<solver::Mahony>` → 输出 roll/pitch 的 RMSE/MAX（度）与 yaw 漂移量，可选导出 CSV；
-- **验收标准**：test_estimator 4 PASS + replay 报告 roll/pitch RMSE 有界（预期 < 5°）；**yaw 漂移是 6 轴预期行为**（无磁力计，yaw 不可观），报告里记录漂移量即可，不算失败。
+## 批次 4a-1：修 P0-4 —— `is_meas_` 布尔闩锁 → 残差年龄计数器（2026-09-12 ✅ 已在 /tmp 编译+实测验证）
+
+**目标**：`core/solver/mahony.hpp` + `mahony.cpp` 两个文件，**整文件重抄**（改动处已用【】标注）。
+
+**为什么必须先修这个**：它是 `DESIGN §3.6.5 ④` 的最小落地，**也是批次 4a 里 `heading_age_` 的同一套机制** —— 先在小处做对，再复制到 yaw 通道，避免"设计对了但实现又写成布尔"。
+
+**抄前必懂（三句话）**：
+
+1. **旧代码的 bug（实测）**：`is_meas_` 一旦 `true` **永不回退**。加速度计在 t=100s 断线后，`predict` 仍然拿着**冻结的** `e_last_` 当"新鲜残差"用：
+
+   ```
+   ω += Kp · e_last_(冻结)   ← 一个恒定的假角速度（≈14°/s）
+   q̂ → v̂ → e → e_last_      ← 这条反馈环【断了】（e 不再更新）
+   ⇒ 匀加速跑飞
+   ```
+
+2. **年龄计数器的语义**：一个浮点数，同时覆盖两种"没有量测"的情况 —— 启动未对准（初值 = 哨兵值）和中途失效（随时间增长）。**旧的 bool 只能表达第一种。**
+
+   ```
+   observe 到来 → acc_age_ = 0          （残差新鲜）
+   每个 predict → acc_age_ += dt        （时间在流逝）
+   用之前判断   → acc_age_ <= acc_timeout_ 才用残差修正
+   ```
+
+3. **`+dt` 放在"判断之后"**：这样"本周期刚喂过 acc"时 `age_ = 0`，正好被用上；连续 N 个周期没喂，`age_ = N·dt` 如实累积。
+
+**修前 / 修后实测对比（NAV2 320s，t=100s 断掉加速度计、`predict` 照跑）**：
+
+| | 全程 RMSE | 断后 RMSE | 断后峰值 | 恶化到 >10° 用时 |
+|---|---|---|---|---|
+| 修前 `is_meas_` | 97.510° | **117.582°** | 185.169° | **1.48 s** |
+| 修后 `acc_age_` | 4.954° | **5.541°** | 13.943° | **198.56 s**（≈纯陀螺自然漂移）|
+
+**正常工况零退化**（ctest 5/5 全绿；回放 roll 2.152° / pitch 2.645° / yaw −14.450°，与修前**逐位一致**）。
+
+### 文件 10：core/solver/mahony.hpp（整文件，重抄）
+
+```cpp
+#pragma once
+
+#include "../math/quat.hpp"
+#include "../math/vec3.hpp"
+
+namespace foucault::solver {
+
+
+struct MahonyConfig {
+    float kp_ = 5.0f;
+    float ki_ = 0.3f;
+    float integral_limit_ = 10.0f;
+    float acc_timeout_ = 0.1f;      // 【新】acc 残差有效期(s)：超过它视为"没有量测"（P0-4）
+};
+
+class Mahony {
+public:
+    constexpr Mahony() = default;
+    explicit Mahony(const MahonyConfig& cfg) : cfg_(cfg) {}
+
+    void reset();           // 姿态复位为单位元
+    void reset(const math::Quatf& q);   // 指定初始姿态(初始对齐F5？)
+
+    // 异步多速率
+    // predict 同imu同速率，observe事件驱动
+    void predict(const math::Vec3f& gyro, float dt);
+    void observe(const math::Vec3f& acc, float dt);
+    void update(const math::Vec3f& gyro, const math::Vec3f& acc, float dt);
+
+    const math::Quatf& quaternion() const { return q_; }
+    math::Vec3f euler() const;
+
+private:
+    // 【新】"从未收到过量测"的哨兵年龄：足够大（永远 > acc_timeout_），且 +dt 不溢出、不丧失精度
+    static constexpr float k_never_measured_ = 1.0e6f;
+
+    // 【新】量测是否新鲜 —— 取代原来的 bool is_meas_
+    bool has_valid_acc() const { return acc_age_ <= cfg_.acc_timeout_; }
+
+    MahonyConfig cfg_;
+    math::Quatf q_;         // 姿态状态(估算器的输出)
+    math::Vec3f e_int_;     // integral (零偏估计)
+    math::Vec3f e_last_;    // 最近一次残差
+    float acc_age_ = k_never_measured_;   // 【改】距上次有效 acc 量测的秒数（原为 bool 闩锁）
+};
+
+
+
+
+}
+```
+
+### 文件 11：core/solver/mahony.cpp（整文件，重抄）
+
+```cpp
+#include "mahony.hpp"
+
+#include "../math/scalar_ops.hpp"
+
+namespace foucault::solver {
+
+
+void Mahony::reset() {
+    q_ = math::Quatf::identity();
+    e_int_ = math::Vec3f(0, 0, 0);
+    e_last_ = math::Vec3f(0, 0, 0);
+    acc_age_ = k_never_measured_;       // 【改】重置为"从未有过量测"
+}
+
+void Mahony::reset(const math::Quatf& q) {
+    q_ = q;
+    q_.normalize();
+    e_int_ = math::Vec3f(0, 0, 0);
+    e_last_ = math::Vec3f(0, 0, 0);
+    acc_age_ = k_never_measured_;       // 【改】同上
+}
+
+void Mahony::predict(const math::Vec3f& gyro, float dt) {
+    math::Vec3f omega = gyro;
+    // 【改】bool 闩锁 → 年龄门控：残差【新鲜】才拿它修正
+    if (has_valid_acc()) {
+        // 修正折进角速度：ω_corrected = ω + Kp·e + Ki·∫e
+        omega.x_ += cfg_.kp_ * e_last_.x_ + cfg_.ki_ * e_int_.x_;
+        omega.y_ += cfg_.kp_ * e_last_.y_ + cfg_.ki_ * e_int_.y_;
+        omega.z_ += cfg_.kp_ * e_last_.z_ + cfg_.ki_ * e_int_.z_;
+    }
+    acc_age_ += dt;                     // 【新】时间推进：残差在不新鲜度上累积
+    q_.integrate(omega, dt);
+}
+
+void Mahony::observe(const math::Vec3f& acc, float dt) {
+    math::Vec3f a = acc;
+    a.normalize();                                        // only fetch direction
+
+    math::Vec3f g_world(0, 0, 1);                   // 世界系重力
+    math::Vec3f v = q_.conjugated().rotate(g_world);      // 猜出来的姿态下 重力此时在哪
+
+    math::Vec3f e = a.cross(v);                           // 算error
+
+    // error integral (also zero offset)
+    e_int_.x_ += e.x_ * dt;
+    e_int_.y_ += e.y_ * dt;
+    e_int_.z_ += e.z_ * dt;
+    // integral limit
+    e_int_.x_ = math::clamp(e_int_.x_, -cfg_.integral_limit_, cfg_.integral_limit_);
+    e_int_.y_ = math::clamp(e_int_.y_, -cfg_.integral_limit_, cfg_.integral_limit_);
+    e_int_.z_ = math::clamp(e_int_.z_, -cfg_.integral_limit_, cfg_.integral_limit_);
+
+    e_last_ = e;
+    acc_age_ = 0.0f;                    // 【改】残差新鲜 → 年龄清零（原为 is_meas_ = true）
+}
+
+void Mahony::update(const math::Vec3f& gyro, const math::Vec3f& acc, float dt) {
+    observe(acc, dt);
+    predict(gyro, dt);
+}
+
+math::Vec3f Mahony::euler() const {
+    float roll, pitch, yaw;
+    q_.to_euler(roll, pitch, yaw);
+    return math::Vec3f(roll, pitch, yaw);
+}
+
+
+
+
+}
+```
+
+### ⚠️ 抄录时已踩到的陷阱（2026-09-12）
+
+**把 `acc_age_` 的初始化从"类内"搬到"构造函数的初始化列表"会引入 bug。**
+
+若重构为 `float acc_age_;` + `Mahony(const MahonyConfig& cfg) : cfg_(cfg), acc_age_(k_never_measured_) {}`，则：
+
+1. **编译期**：`constexpr Mahony() = default;` 无法再是 `constexpr`（它不初始化 `acc_age_`）→ **3 个 error**；
+2. **语义**（即使编译通过）：`Mahony m;` 走默认构造 → `acc_age_` 是**未初始化的栈垃圾** → 随机表现为"有量测 / 无量测"，且**非确定性**——这是最难查的一类 bug。
+
+**正确做法（单一真相源）**：初始化留在**类内**，它对**所有**构造函数生效：
+
+```cpp
+    float acc_age_ = k_never_measured_;   // 类内初始化：覆盖默认构造 + 有参构造
+```
+
+（有参构造里再补一遍也不会错，只是冗余。）
+
+> 推广到整个 core：**任何有"哨兵初值"的成员，初始化一律放类内**，别依赖某个构造函数。
+> 实测：加回类内初始化后，ctest 5/5、回放金标 2.645°/−14.450° 不变、P0-4 实验复现 5.541°/198.56s。
+
+### 验收（抄完自己跑）
+
+- [ ] 编译零告警（`-Wall -Wextra -Werror`）
+- [ ] `ctest` **5/5 全绿**（现有 4 套锚点 + math 审计 115 断言都不受影响）
+- [ ] 回放数字**逐位不变**：roll 2.152° / pitch 2.645° / yaw −14.450° ← **回归金标**
+- [ ] （可选）复现 P0-4 实验：t=100s 后停止 `observe`，姿态应表现为**纯陀螺自然漂移**（>10° 需 ≈199s），而不是 1.48s 就跑飞
+
+**只改这 4 处**：`acc_timeout_`（config）/ `acc_age_`（成员）/ `has_valid_acc()`（helper）/ 三处赋值 + `predict` 的 `+= dt`。其余一字不动。
+
+**下一步（批次 4a 主体）**：yaw 注入通道 —— 按 `DESIGN §3.7`（`v_` 提升为成员、`e_heading_`、`heading_offset_`、`heading_age_`、`trust` 形参、`OutputStatus`）。
+
+## 批次 4a：Mahony 外部 yaw 注入（2026-09-12 ✅ 已在 /tmp 编译 + 实测验证）
+
+**目标**：让 6 轴下不可观的 yaw 被外部航向源锁住。设计依据 `DESIGN §3.7`，决策 Y1~Y7 已定案。
+
+**为什么这一批最重要**：实测 6 轴基线 **yaw 漂移 −14.450°/320s**；注入外部参考后 → **RMSE 0.085°**（设计目标 < 2°）。
+
+### 抄前必懂（四句话）
+
+1. **修正量往哪加**：`ω += Kp_heading·e_heading·v̂`，其中 `v̂ = q̂*·(0,0,1)` 是**重力方向在机体系里的表达**。
+   在机体系里沿 `v̂` 加角速度 ≡ 在**世界系里绕 z 轴转** → 纯 yaw 修正。
+   ❌ **不要**加机体系 z（`(0,0,1)`）：机体一旦有 roll/pitch（斜坡/机动），绕机体系 z 转 ≠ 绕重力轴转 → yaw 误差泄漏成 roll/pitch 误差。
+
+2. **为什么 acc 通道管不了 yaw（数学证明，`DESIGN §3.7.2`）**：
+   `e_acc = a × v̂` 必垂直于两个乘数 ⇒ `e_acc ⊥ v̂` ⇒ **沿重力轴的分量恒为 0**。
+   → acc 通道对 yaw **结构性失明**。yaw 通道不是"补第二次修正"，是**填补一个数学上无人负责的自由度**。
+
+3. **残差每周期重算，不要冻结**：`e_heading = wrap(ψ_ref + offset − ψ̂)`。
+   若只在收到参考时算一次再复用，等效增益 = `Kp_heading · T_ref` 会随**参考速率**变化（5Hz 参考时 `Kp·T=1` → 临界振荡）。
+
+4. **首次观测只做"自动对齐"，不产生修正**（本批最大的行为陷阱，见下方 ⚠️）。
+
+### 文件 12：core/math/scalar_ops.hpp（**只加一个函数，其余不动**）
+
+> ⚠️ 这是 `core/math/` 归档后的**唯一一次解冻**（`DESIGN §4.3.1` 规定：改动须同步更新 `test_math_audit`）。
+> 已在 `test_math_audit.cpp` 补 **B9a~B9j 共 10 条断言**，ctest 全绿。
+
+```cpp
+// 角度归一化到 [−π, π]：角度的【差分】必须 wrap，否则 179° 与 −179° 会算出 358° 造成猛转
+// 快路径：atan2 类角度的差分绝大多数已在范围内 → 零开销直接返回
+template <typename T>
+inline T wrap_pi(T a) {
+    const T pi = T(3.14159265358979323846);
+    if (a > pi || a < -pi) {
+        const T two_pi = T(2) * pi;
+        a = std::fmod(a + pi, two_pi);
+        if (a < T(0)) { a += two_pi; }
+        a -= pi;
+    }
+    return a;
+}
+```
+
+### 文件 13：core/solver/mahony.hpp（整文件，重抄）
+
+> ⚠️ **本批内容已被「批次 4a-2」取代**（残差改为 predict 现算、`e_last_`→`acc_`、`observe` 去掉 `dt`）。
+> 抄写请用 **批次 4a-2 的文件 17/18**；此处仅作历史记录。
+
+```cpp
+#pragma once
+
+#include "../math/quat.hpp"
+#include "../math/vec3.hpp"
+
+namespace foucault::solver {
+
+
+struct MahonyConfig {
+    float kp_ = 5.0f;
+    float ki_ = 0.3f;
+    float integral_limit_ = 10.0f;
+    float acc_timeout_ = 0.1f;
+    // external yaw entry
+    float kp_heading_ = 5.0f;
+    float heading_timeout_ = 0.3f;      // 航向参考有效期 10hz容忍三个丢包
+};
+
+class Mahony {
+public:
+    constexpr Mahony() = default;
+    explicit Mahony(const MahonyConfig& cfg);
+
+    void reset();           // 姿态复位为单位元
+    void reset(const math::Quatf& q);   // 指定初始姿态(初始对齐F5？)
+
+    // 异步多速率
+    // predict 同imu同速率，observe事件驱动
+    void predict(const math::Vec3f& gyro, float dt);
+    void observe(const math::Vec3f& acc, float dt);
+    void observe_heading(float heading_ref, float trust = 1.0f);
+    void update(const math::Vec3f& gyro, const math::Vec3f& acc, float dt);
+
+    // Quality Check
+    bool is_acc_valid() const;
+    bool is_heading_valid() const;
+
+    const math::Quatf& quaternion() const;
+    math::Vec3f euler() const;
+
+private:
+    static constexpr float k_never_measured_ = 1.0e6f;
+
+    void reset_heading_channel();
+
+    MahonyConfig cfg_;
+    math::Quatf q_;                             // 姿态状态(估算器的输出)
+    math::Vec3f e_int_;                         // integral (零偏估计)
+    math::Vec3f e_last_;                        // 最近一次残差
+    float acc_age_ = k_never_measured_;         // 距离上一次有效acc量测时间间隔
+
+    float heading_ref_ =0.0f;                       // 最近的一次航向参考
+    float heading_offset_ = 0.0f;                   // 首次观测的自动对齐量
+    float heading_age_ = k_never_measured_;         // 距上次航向参考的秒数
+    float heading_trust_ = 1.0;                     // 最近一次参考的可信度
+    bool is_heading_aligned_ = false;               // 是否已完成首次对齐
+};
+
+
+
+
+}
+```
+
+### 文件 14：core/solver/mahony.cpp（整文件，重抄）
+
+> ⚠️ **本批内容已被「批次 4a-2」取代** —— 见文件 13 的说明。
+
+```cpp
+#include "mahony.hpp"
+
+#include "../math/scalar_ops.hpp"
+
+namespace foucault::solver {
+
+
+namespace {
+    constexpr math::Vec3f k_gravity_world(0.0f, 0.0f, 1.0f);      // 世界系重力方向
+    constexpr float k_half_pi = 1.5707963267948966f;                    // 航向残差限幅
+}
+
+// ----- constructor -----
+Mahony::Mahony(const MahonyConfig& cfg) : cfg_(cfg) {}
+
+// ----- API -----
+void Mahony::reset() {
+    q_ = math::Quatf::identity();
+    e_int_ = math::Vec3f(0, 0, 0);
+    e_last_ = math::Vec3f(0, 0, 0);
+    acc_age_ = k_never_measured_;
+    reset_heading_channel();
+}
+
+void Mahony::reset(const math::Quatf& q) {
+    q_ = q;
+    q_.normalize();
+    e_int_ = math::Vec3f(0, 0, 0);
+    e_last_ = math::Vec3f(0, 0, 0);
+    acc_age_ = k_never_measured_;
+    reset_heading_channel();
+}
+
+void Mahony::predict(const math::Vec3f& gyro, float dt) {
+    math::Vec3f omega = gyro;
+    if (is_acc_valid()) {
+        // 修正折进角速度：ω_corrected = ω + Kp·e + Ki·∫e
+        omega.x_ += cfg_.kp_ * e_last_.x_ + cfg_.ki_ * e_int_.x_;
+        omega.y_ += cfg_.kp_ * e_last_.y_ + cfg_.ki_ * e_int_.y_;
+        omega.z_ += cfg_.kp_ * e_last_.z_ + cfg_.ki_ * e_int_.z_;
+    }
+    if (is_heading_valid()) {
+        // yaw residual
+        float roll, pitch, psi;
+        q_.to_euler(roll, pitch, psi);
+        float e_heading = math::wrap_pi(heading_ref_ + heading_offset_ - psi);
+        e_heading = math::clamp(e_heading, -k_half_pi, k_half_pi);
+        // 绕世界z轴转 == body系中沿重力方向v加角速度
+        // v由当前q_现算
+        const math::Vec3f v = q_.conjugated().rotate(k_gravity_world);
+        const float k = cfg_.kp_heading_ * heading_trust_ * e_heading;
+
+        omega.x_ += k * v.x_;
+        omega.y_ += k * v.y_;
+        omega.z_ += k * v.z_;
+    }
+    acc_age_ += dt;
+    heading_age_ += dt;
+    q_.integrate(omega, dt);
+}
+
+void Mahony::observe(const math::Vec3f& acc, float dt) {
+    math::Vec3f a = acc;
+    a.normalize();                                                  // only fetch direction
+
+    math::Vec3f v = q_.conjugated().rotate(k_gravity_world);      // 猜出来的姿态q_下 重力此时在哪
+
+    math::Vec3f e = a.cross(v);                                     // 算error
+
+    // error integral (also zero offset)
+    e_int_.x_ += e.x_ * dt;
+    e_int_.y_ += e.y_ * dt;
+    e_int_.z_ += e.z_ * dt;
+    // integral limit
+    e_int_.x_ = math::clamp(e_int_.x_, -cfg_.integral_limit_, cfg_.integral_limit_);
+    e_int_.y_ = math::clamp(e_int_.y_, -cfg_.integral_limit_, cfg_.integral_limit_);
+    e_int_.z_ = math::clamp(e_int_.z_, -cfg_.integral_limit_, cfg_.integral_limit_);
+
+    e_last_ = e;
+    acc_age_ = 0.0f;                                       // acc_age_唯一清零口
+}
+
+void Mahony::update(const math::Vec3f& gyro, const math::Vec3f& acc, float dt) {
+    observe(acc, dt);
+    predict(gyro, dt);
+}
+
+void Mahony::observe_heading(float heading_ref, float trust) {
+    if (!is_heading_aligned_) {
+        float roll, pitch, psi;
+        q_.to_euler(roll, pitch, psi);
+        heading_offset_ = math::wrap_pi(psi - heading_ref);
+        is_heading_aligned_ = true;
+    }
+    heading_ref_ = heading_ref;
+    heading_trust_ = math::clamp(trust, 0.0f, 1.0f);
+    heading_age_ = 0.0f;            // heading_age_ 唯一清零口
+}
+
+// ----- ref valid check -----
+bool Mahony::is_acc_valid() const { return acc_age_ <= cfg_.acc_timeout_; }
+bool Mahony::is_heading_valid() const { return heading_age_ <= cfg_.heading_timeout_; }
+
+// ----- typical output -----
+const math::Quatf& Mahony::quaternion() const { return q_; }
+
+math::Vec3f Mahony::euler() const {
+    float roll, pitch, yaw;
+    q_.to_euler(roll, pitch, yaw);
+    return math::Vec3f(roll, pitch, yaw);
+}
+
+// ----- private -----
+void Mahony::reset_heading_channel() {
+    heading_ref_ = 0.0f;
+    heading_age_ = k_never_measured_;
+    heading_trust_ = 1.0f;
+    is_heading_aligned_ = false;
+}
+
+
+
+}
+```
+
+### 文件 15：core/estimator.hpp（**改 1 处**）
+
+```cpp
+// 改前：空实现，调用被【静默忽略】
+    void observe_heading(float /*heading_rad*/, float /*dt*/) {}
+
+// 改后：转发给求解器（真实通道）
+    // 【4a】外部航向注入：转发给求解器（原为空实现，调用被静默忽略 —— 现为真实通道）
+    //   注意：第二参数语义由 dt 改为 trust（DESIGN §3.7.8 Y5）
+    void observe_heading(float heading_rad, float trust = 1.0f) { solver_.observe_heading(heading_rad, trust); }
+```
+
+### ⚠️ 两个必须知道的行为陷阱（本项目实测踩到 3 次）
+
+**① 首次观测只做自动对齐，不产生任何修正**
+
+```cpp
+est.reset(Quatf::from_euler(0, 0, 0.2f));   // 估计器当前 yaw = 0.2
+est.observe_heading(1.0f);                      // 首次 → 记下 offset = 0.2 − 1.0 = −0.8
+                                            // 目标 = 1.0 + (−0.8) = 0.2 = 当前值 → 残差 0，不动
+```
+
+**这是设计行为**（`DESIGN §3.7.3`）：参考的"起源"是任意的（里程计积分起点由开机时刻决定），
+所以只跟踪**变化量**，保留估计器已有的初始航向。
+
+- ✅ 想让 yaw 收敛到某个值：**从当前 yaw 出发斜坡过去**，或先 `reset(目标姿态)` 再注入
+- ❌ 不要写"`reset()` 后直接 `observe_heading(目标)` 期望它转过去" —— 不会转
+
+**② 第二参数语义变了：《dt》→《trust》**（类型相同，**编译器不会报错**）
+
+```cpp
+est.observe_heading(1.0f, 0.02f);   // 旧代码：dt=0.02s
+est.observe_heading(1.0f, 0.02f);   // 新代码：trust=0.02 ← 参考几乎不被采纳，静默行为改变！
+```
+
+本项目已同步修正 `test_estimator.cpp` 中的调用。**你若有别处调用，务必一起改。**
+
+### 验收（已实测，结果如下）
+
+```bash
+./build/replay_nav2 data/NAV2_data.bin -y gt          # 理想里程计 50Hz
+./build/replay_nav2 data/NAV2_data.bin -y gt_slow     # 10Hz 多速率
+./build/replay_nav2 data/NAV2_data.bin -y gt_noisy    # σ≈2° 噪声
+./build/replay_nav2 data/NAV2_data.bin -y gt_drop     # t∈[100,130)s 断线
+```
+
+| 验收项（`DESIGN §3.7.7`）| 通过线 | **实测** |
+|---|---|---|
+| ① yaw 漂移 | −14.450° → RMSE < 2° | **0.085°**（MAX 0.701°）|
+| ② roll/pitch 不退化 | RMSE < 5° | **2.152° / 2.645°** —— 与 6 轴基线**逐位相同**（正交性的最强证据）|
+| ③ 10Hz 间歇参考 | 仍收敛 | **RMSE 0.095°** |
+| ④ 加噪参考 σ≈2° | 不发散不猛转 | **RMSE 1.266°**（MAX 2.051°）|
+| ⑤ （追加）30s 断线 | 优雅降级 | **RMSE 0.385°**，恢复后无残留 |
+
+**单元测试**：`test_mahony` 新增 9 锚点（无参考漂移 / 锁定 / 跟随 / 自动对齐 / 失效降级 / 正交性 / 斜坡滞后 / 保持收敛 / 残差限幅），
+`test_math_audit` +10，`test_estimator` 改 3 项 —— **全绿**；sanitizer（ASan+UBSan）无告警。
+
+**理论吻合点**（不是"调出来的"，是可预测的）：
+- 恒定参考的稳态误差 = 零偏/`Kp_heading` = 0.05/5 = **0.01 rad** → 实测 0.0100 ✓
+- 斜坡跟随滞后 = 斜率×τ = 0.2×(1/5) = **0.04 rad** → 实测 0.0400 ✓
+
+### 本批不做的（避免一次太多）
+
+- ❌ acc 通道的 `trust`（只在航向通道落地）→ 与仲裁判据一起进 4b
+- ❌ `OutputStatus` 完整结构（本批只给 `is_acc_valid()` / `is_heading_valid()` 两个查询口）
+- ❌ 绝对航向源（磁力计/RTK）的语义 —— 自动对齐按"相对参考"设计，绝对源需要单独定语义（记入待办）
+
+---
+
+## 批次 4a-2：统一消费口 —— 残差每周期现算（2026-09-12 ✅ 已在 /tmp 编译 + 实测验证）
+
+**目标**：消除 `observe` 与 `observe_heading` 的结构不对称，并修掉 acc 通道一个**潜伏的增益-速率耦合缺陷**。
+改动：`core/solver/mahony.hpp` / `mahony.cpp`（整文件重抄）+ `core/estimator.hpp`（1 行）。
+
+### 抄前必懂：这一批解决什么（四句话）
+
+1. **问题：`v̂` 被算了两遍**
+   ```cpp
+   observe():            v = q̂*·(0,0,1)   ← 算 acc 残差用
+   predict() → heading:  v = q̂*·(0,0,1)   ← 当旋转轴用（同一个公式、同一个 q̂、同一个周期）
+   ```
+   `v̂` 是**纯状态投影**（只由 `q̂` 决定，不需要任何量测）→ 应该只在**唯一消费点**算一次。
+
+2. **更深的问题：`e_last_` 被"冻结"了一个量测周期**
+
+   旧结构里 `observe` 算好残差存进 `e_last_`，`predict` 每个周期直接用它。若 acc 比循环慢（如 acc 100Hz、循环 400Hz），`e_last_` 会被**复用 4 次** —— 等效增益变成 `Kp × 复用次数 × dt`，**随量测速率漂移**。
+
+   实测（从倾斜误差收敛到 1/e 的时间常数 τ，理论值 = 1/Kp = 0.2000 s）：
+
+   | acc 速率（predict 固定 500Hz）| 旧结构 τ | 新结构 τ |
+   |---|---|---|
+   | 500 Hz | 0.1980 s | 0.1980 s |
+   | 100 Hz | 0.1940 s | **0.1980 s** |
+   | 20 Hz | 0.1740 s（快 12% ✗）| **0.1980 s** |
+
+   → **旧结构在 acc 慢于循环时，增益会悄悄变化。** 这与 `§3.7.3` 为航向通道写下的原则是同一条：
+   **残差必须在 `predict` 里用【当前】`q̂` 现算，不能冻结。**
+
+3. **新结构：`observe*` 只收集，`predict` 是唯一消费点**
+
+   ```cpp
+   void observe(const Vec3f& acc);                        // 只存【量测】（已归一化），不带 dt
+   void observe_heading(float heading_ref, float trust);  // 只存【参考】，不带 dt
+
+   void predict(const Vec3f& gyro, float dt) {
+       const Vec3f v = q̂*·(0,0,1);          // ★ 统一消费口：本周期只算一次
+       if (is_acc_valid())     { e = acc_ × v;  e_int_ += e·dt;  ω += Kp·e + Ki·e_int_; }
+       if (is_heading_valid()) { e = wrap(ref+offset−ψ̂);          ω += Kp·e·v; }
+       ...
+   }
+   ```
+
+   **两个入口现在形状完全一致**：都是"把量测装进盒子并清零年龄"，物理全在 `predict`。
+
+4. **代价：`observe` 的签名变了**（破坏性）
+   ```cpp
+   est.observe(s, kDt);   // 旧：带 dt（用于 e_int_ += e·dt）
+   est.observe(s);        // 新：不带（积分累加搬到 predict）
+   ```
+
+### 文件 17：core/solver/mahony.hpp（整文件，重抄）
+
+> ⚠️ **已被「批次 4a-3」取代**（predict 拆成 `acc_correction` / `heading_correction`）。抄写请用 **文件 20/21**。
+
+```cpp#pragma once
+
+#include "../math/quat.hpp"
+#include "../math/vec3.hpp"
+
+namespace foucault::solver {
+
+
+struct MahonyConfig {
+    float kp_ = 5.0f;
+    float ki_ = 0.3f;
+    float integral_limit_ = 10.0f;
+    float acc_timeout_ = 0.1f;
+    // external yaw entry
+    float kp_heading_ = 5.0f;
+    float heading_timeout_ = 0.3f;      // 航向参考有效期 10hz容忍三个丢包
+};
+
+class Mahony {
+public:
+    constexpr Mahony() = default;
+    explicit Mahony(const MahonyConfig& cfg);
+
+    void reset();                       // 姿态复位为单位元
+    void reset(const math::Quatf& q);   // 指定初始姿态(初始对齐F5？)
+
+    // 异步多速率
+    // predict 同imu同速率，observe事件驱动
+    void predict(const math::Vec3f& gyro, float dt);
+    void observe(const math::Vec3f& acc);        // 只存量测（残差留给 predict 用当前 q̂ 现算）
+    void observe_heading(float heading_ref, float trust = 1.0f);
+    void update(const math::Vec3f& gyro, const math::Vec3f& acc, float dt);
+
+    // Quality Check
+    bool is_acc_valid() const;
+    bool is_heading_valid() const;
+
+    const math::Quatf& quaternion() const;
+    math::Vec3f euler() const;
+
+private:
+    static constexpr float k_never_measured_ = 1.0e6f;
+
+    void reset_heading_channel();
+
+    MahonyConfig cfg_;
+    math::Quatf q_;                             // 姿态状态(估算器的输出)
+    math::Vec3f e_int_;                         // integral (零偏估计)
+    math::Vec3f acc_;                           // 最近一次有效 acc 量测（已归一化，只存方向）
+    float acc_age_ = k_never_measured_;         // 距离上一次有效acc量测时间间隔
+
+    float heading_ref_ =0.0f;                       // 最近的一次航向参考
+    float heading_offset_ = 0.0f;                   // 首次观测的自动对齐量
+    float heading_age_ = k_never_measured_;         // 距上次航向参考的秒数
+    float heading_trust_ = 1.0;                     // 最近一次参考的可信度
+    bool is_heading_aligned_ = false;               // 是否已完成首次对齐
+};
+
+
+
+
+}
+```
+
+### 文件 18：core/solver/mahony.cpp（整文件，重抄）
+
+> ⚠️ **已被「批次 4a-3」取代** —— 见文件 17 的说明。
+
+```cpp#include "mahony.hpp"
+
+#include "../math/scalar_ops.hpp"
+
+namespace foucault::solver {
+
+
+namespace {
+    constexpr math::Vec3f k_gravity_world(0.0f, 0.0f, 1.0f);      // 世界系重力方向
+    constexpr float k_half_pi = 1.5707963267948966f;                    // 航向残差限幅
+}
+
+// ----- constructor -----
+Mahony::Mahony(const MahonyConfig& cfg) : cfg_(cfg) {}
+
+// ----- API -----
+void Mahony::reset() {
+    q_ = math::Quatf::identity();
+    e_int_ = math::Vec3f(0, 0, 0);
+    acc_ = math::Vec3f(0, 0, 0);
+    acc_age_ = k_never_measured_;
+    reset_heading_channel();
+}
+
+void Mahony::reset(const math::Quatf& q) {
+    q_ = q;
+    q_.normalize();
+    e_int_ = math::Vec3f(0, 0, 0);
+    acc_ = math::Vec3f(0, 0, 0);
+    acc_age_ = k_never_measured_;
+    reset_heading_channel();
+}
+
+void Mahony::predict(const math::Vec3f& gyro, float dt) {
+    math::Vec3f omega = gyro;
+
+    // 【统一消费口】v̂ = q̂*·(0,0,1)：重力方向在机体系里的表达，本周期只算一次，两个通道共用
+    //   它是【纯状态投影】——只由 q̂ 决定，不需要任何量测，所以谁先谁后都拿得到同一个值
+    const math::Vec3f v = q_.conjugated().rotate(k_gravity_world);
+
+    if (is_acc_valid()) {
+        // 算error
+        const math::Vec3f e_acc = acc_.cross(v);
+        // error integral (also zero offset)
+        e_int_.x_ += e_acc.x_ * dt;
+        e_int_.y_ += e_acc.y_ * dt;
+        e_int_.z_ += e_acc.z_ * dt;
+        // integral limit
+        e_int_.x_ = math::clamp(e_int_.x_, -cfg_.integral_limit_, cfg_.integral_limit_);
+        e_int_.y_ = math::clamp(e_int_.y_, -cfg_.integral_limit_, cfg_.integral_limit_);
+        e_int_.z_ = math::clamp(e_int_.z_, -cfg_.integral_limit_, cfg_.integral_limit_);
+        // 修正折进角速度：ω_corrected = ω + Kp·e + Ki·∫e
+        omega.x_ += cfg_.kp_ * e_acc.x_ + cfg_.ki_ * e_int_.x_;
+        omega.y_ += cfg_.kp_ * e_acc.y_ + cfg_.ki_ * e_int_.y_;
+        omega.z_ += cfg_.kp_ * e_acc.z_ + cfg_.ki_ * e_int_.z_;
+    }
+    if (is_heading_valid()) {
+        // 航向残差 = 参考 − 估计；必须 wrap 到 [−π,π] 再限幅（每周期用当前 q̂ 现算，不得冻结）
+        float roll, pitch, psi;
+        q_.to_euler(roll, pitch, psi);
+        float e_heading = math::wrap_pi(heading_ref_ + heading_offset_ - psi);
+        e_heading = math::clamp(e_heading, -k_half_pi, k_half_pi);
+        // 绕世界z轴转 == body系中沿重力方向 v 加角速度（v 由上面的统一消费口给出，本周期只算一次）
+        const float k = cfg_.kp_heading_ * heading_trust_ * e_heading;      // 增益
+        // 修正折进v
+        omega.x_ += k * v.x_;
+        omega.y_ += k * v.y_;
+        omega.z_ += k * v.z_;
+    }
+    acc_age_ += dt;
+    heading_age_ += dt;
+
+    q_.integrate(omega, dt);
+}
+
+void Mahony::observe(const math::Vec3f& acc) {
+    acc_ = acc;
+    acc_.normalize();                                         // only fetch direction
+    acc_age_ = 0.0f;                                       // acc_age_唯一清零口
+}
+
+void Mahony::observe_heading(float heading_ref, float trust) {
+    if (!is_heading_aligned_) {
+        float roll, pitch, psi;
+        q_.to_euler(roll, pitch, psi);
+        heading_offset_ = math::wrap_pi(psi - heading_ref);
+        is_heading_aligned_ = true;
+    }
+    heading_ref_ = heading_ref;
+    heading_trust_ = math::clamp(trust, 0.0f, 1.0f);
+    heading_age_ = 0.0f;            // heading_age_ 唯一清零口
+}
+
+void Mahony::update(const math::Vec3f& gyro, const math::Vec3f& acc, float dt) {
+    observe(acc);
+    predict(gyro, dt);
+}
+
+// ----- ref valid check -----
+bool Mahony::is_acc_valid() const { return acc_age_ <= cfg_.acc_timeout_; }
+bool Mahony::is_heading_valid() const { return heading_age_ <= cfg_.heading_timeout_; }
+
+// ----- typical output -----
+const math::Quatf& Mahony::quaternion() const { return q_; }
+
+math::Vec3f Mahony::euler() const {
+    float roll, pitch, yaw;
+    q_.to_euler(roll, pitch, yaw);
+    return math::Vec3f(roll, pitch, yaw);
+}
+
+// ----- private -----
+void Mahony::reset_heading_channel() {
+    heading_ref_ = 0.0f;
+    heading_offset_ = 0.0f;
+    heading_age_ = k_never_measured_;
+    heading_trust_ = 1.0f;
+    is_heading_aligned_ = false;
+}
+
+
+
+}
+```
+
+### 文件 19：core/estimator.hpp（**改 1 行**）
+
+```cpp
+// 改前
+    void observe(const measure::IMUSample& s, float dt) { solver_.observe(s.acc_, dt); }
+
+// 改后（去掉 dt：求解器不再需要它）
+    void observe(const measure::IMUSample& s) { solver_.observe(s.acc_); }
+```
+
+### 验收（已实测）
+
+| 检查项 | 结果 |
+|---|---|
+| 严格编译 `-Wconversion -Wshadow -Werror -pedantic -fno-exceptions -fno-rtti` | 零告警 |
+| ASan + UBSan | 0 告警 |
+| `ctest` | 5/5 |
+| `test_mahony` 15 锚点 | ALL PASS |
+| 五项回放验收 | **与批次 4a 逐位一致**：gt 0.085° / gt_slow 0.095° / gt_noisy 1.266° / gt_drop 0.385° |
+| **速率无关性** | τ 在 500/100/20Hz 下**恒为 0.1980 s**（旧结构 0.1980/0.1940/0.1740）|
+
+> 1:1 同速率时两版**逐位相同** —— 所以这不是"改了行为"，而是"消掉了一个只在多速率下暴露的缺陷"。
+
+---
+
+## 批次 4a-3：统一出口 —— 每通道产出一个 ω 修正项（2026-09-12 ✅ 已在 /tmp 编译 + 实测验证）
+
+**目标**：把 `predict` 从"两个 if 块"改成"两项相加"。只动 `core/solver/mahony.hpp` / `mahony.cpp`（整文件重抄）。
+**行为零变化**（纯结构重构）—— 五项回放验收与批次 4a-2 **逐位相同**。
+
+### 抄前必懂：为什么"不在线 → 返回 0"是对的
+
+修正是**加法项**：
+
+```cpp
+ω = gyro + 项₁ + 项₂ + …
+```
+
+加法的**幺元就是 0** —— 所以：
+
+> **门控的语义 = "这一项的值为 0"，而不是"跳过一段代码"。**
+
+```cpp
+if (is_acc_valid()) { …修正… }        // 描述【控制流】
+return math::Vec3f(0,0,0);            // 描述【数学】（不在线 = 该项不存在）
+```
+
+后者更贴近本质：**"通道不在线"从一个分支降级成一次取值**。实测：不给任何量测、纯 `predict` 2s，姿态原地不动（两项确实为 0）。
+
+### 结构收益
+
+```cpp
+// 重构后：predict 只剩骨架（函数体 42 行 → 16 行）
+void Mahony::predict(const math::Vec3f& gyro, float dt) {
+    const math::Vec3f v = q̂*·(0,0,1);                    // 【统一消费口】
+    const math::Vec3f omega = gyro
+                            + acc_correction(v, dt)      // 【统一出口】
+                            + heading_correction(v);
+    acc_age_ += dt;
+    heading_age_ += dt;
+    q_.integrate(omega, dt);
+}
+```
+
+| 收益 | 说明 |
+|---|---|
+| **加第三个通道 = 加一行** | `+ mag_correction(v)`（`DESIGN §3.8.4` 的 ①向量观测通道与 acc 同构）|
+| **每通道可独立推理/测试** | 将来能直接断言"门控失败时该项为 0" |
+| **骨架一屏可见** | 算轴 → 求和 → 计时 → 积分 |
+| **零开销** | `Vec3f` 12 字节且同 TU 内联 → 编译后无差别（数字逐位相同已证）|
+
+### 两处刻意的"不对称"（不是缺陷）
+
+1. **函数名用 `*_correction` 而不是 `*_calc`**
+   `calc` 暗示纯函数，但 `acc_correction` **有副作用**：它更新 `e_int_`（积分累加）。
+   → 声明处已注明 `// 副作用：更新 e_int_`。不标的话，下一个读代码的人会以为能随便调用。
+
+2. **参数故意不同：`acc_correction(v, dt)` vs `heading_correction(v)`**
+   只有 acc 通道需要 `dt`（积分累加）；heading 是**纯 P**，不需要。
+   → **不为"看起来对称"塞一个用不到的 `dt`**（`DESIGN §3.7.8 Y5` 已定：不留死参数）。
+
+### 至此"对称三部曲"完成
+
+```
+① 入口统一（4a-2）  observe(acc) / observe_heading(ref, trust) —— 形状一致：只收集
+        ↓
+② 消费统一（4a-2）  predict 里 v̂ 只算一次，两通道共用同一个轴
+        ↓
+③ 出口统一（4a-3）  每通道产出一个 ω 修正项；不在线 → 0
+```
+
+### 文件 20：core/solver/mahony.hpp（整文件，重抄）
+
+```cpp
+#pragma once
+
+#include "../math/quat.hpp"
+#include "../math/vec3.hpp"
+
+namespace foucault::solver {
+
+
+struct MahonyConfig {
+    float kp_ = 5.0f;
+    float ki_ = 0.3f;
+    float integral_limit_ = 10.0f;
+    float acc_timeout_ = 0.1f;
+    // external yaw entry
+    float kp_heading_ = 5.0f;
+    float heading_timeout_ = 0.3f;      // 航向参考有效期 10hz容忍三个丢包
+};
+
+class Mahony {
+public:
+    constexpr Mahony() = default;
+    explicit Mahony(const MahonyConfig& cfg);
+
+    void reset();                       // 姿态复位为单位元
+    void reset(const math::Quatf& q);   // 指定初始姿态(初始对齐F5？)
+
+    // 异步多速率
+    // predict 同imu同速率，observe事件驱动
+    void predict(const math::Vec3f& gyro, float dt);
+    void observe(const math::Vec3f& acc);        // 只存量测（残差留给 predict 用当前 q̂ 现算）
+    void observe_heading(float heading_ref, float trust = 1.0f);
+    void update(const math::Vec3f& gyro, const math::Vec3f& acc, float dt);
+
+    // Quality Check
+    bool is_acc_valid() const;
+    bool is_heading_valid() const;
+
+    const math::Quatf& quaternion() const;
+    math::Vec3f euler() const;
+
+private:
+    static constexpr float k_never_measured_ = 1.0e6f;
+
+    void reset_heading_channel();
+
+    // 【统一出口】两个通道各产出一个角速度修正项；通道不在线 → 返回 0（加法幺元）
+    //   约定：门控失败 = 该项为 0，而不是"跳过整块"。predict 只做求和。
+    math::Vec3f acc_correction(const math::Vec3f& v, float dt);   // 副作用：更新 e_int_
+    math::Vec3f heading_correction(const math::Vec3f& v);
+
+    MahonyConfig cfg_;
+    math::Quatf q_;                             // 姿态状态(估算器的输出)
+    math::Vec3f e_int_;                         // integral (零偏估计)
+    math::Vec3f acc_;                           // 最近一次有效 acc 量测（已归一化，只存方向）
+    float acc_age_ = k_never_measured_;         // 距离上一次有效acc量测时间间隔
+
+    float heading_ref_ =0.0f;                       // 最近的一次航向参考
+    float heading_offset_ = 0.0f;                   // 首次观测的自动对齐量
+    float heading_age_ = k_never_measured_;         // 距上次航向参考的秒数
+    float heading_trust_ = 1.0;                     // 最近一次参考的可信度
+    bool is_heading_aligned_ = false;               // 是否已完成首次对齐
+};
+
+
+
+
+}
+```
+
+### 文件 21：core/solver/mahony.cpp（整文件，重抄）
+
+```cpp
+#include "mahony.hpp"
+
+#include "../math/scalar_ops.hpp"
+
+namespace foucault::solver {
+
+
+namespace {
+    constexpr math::Vec3f k_gravity_world(0.0f, 0.0f, 1.0f);      // 世界系重力方向
+    constexpr float k_half_pi = 1.5707963267948966f;                    // 航向残差限幅
+}
+
+// ----- constructor -----
+Mahony::Mahony(const MahonyConfig& cfg) : cfg_(cfg) {}
+
+// ----- API -----
+void Mahony::reset() {
+    q_ = math::Quatf::identity();
+    e_int_ = math::Vec3f(0, 0, 0);
+    acc_ = math::Vec3f(0, 0, 0);
+    acc_age_ = k_never_measured_;
+    reset_heading_channel();
+}
+
+void Mahony::reset(const math::Quatf& q) {
+    q_ = q;
+    q_.normalize();
+    e_int_ = math::Vec3f(0, 0, 0);
+    acc_ = math::Vec3f(0, 0, 0);
+    acc_age_ = k_never_measured_;
+    reset_heading_channel();
+}
+
+void Mahony::predict(const math::Vec3f& gyro, float dt) {
+    // 【统一消费口】v̂ = q̂*·(0,0,1)：重力方向在机体系里的表达，本周期只算一次，两个通道共用
+    //   它是【纯状态投影】——只由 q̂ 决定，不需要任何量测，所以谁先谁后都拿得到同一个值
+    const math::Vec3f v = q_.conjugated().rotate(k_gravity_world);
+
+    // 【统一出口】每个通道产出一个角速度修正项，通道不在线则为 0
+    //   Mahony 的架构特性：所有修正都折进角速度 → 没有独立的 correct 步骤
+    const math::Vec3f omega = gyro
+                            + acc_correction(v, dt)
+                            + heading_correction(v);
+
+    acc_age_ += dt;
+    heading_age_ += dt;
+    q_.integrate(omega, dt);
+}
+
+// ----- 通道级修正（predict 的"插件"：加一个通道 = 加一项）-----
+
+math::Vec3f Mahony::acc_correction(const math::Vec3f& v, float dt) {
+    if (!is_acc_valid()) { return math::Vec3f(0, 0, 0); }      // 门控失败 → 该项 0
+    // 残差由"存下的量测 + 当前 q̂"现算（时间基准与本周期完全一致）
+    const math::Vec3f e_acc = acc_.cross(v);
+    // 积分累加（副作用：更新 e_int_ = 陀螺零偏估计）
+    e_int_.x_ += e_acc.x_ * dt;
+    e_int_.y_ += e_acc.y_ * dt;
+    e_int_.z_ += e_acc.z_ * dt;
+    e_int_.x_ = math::clamp(e_int_.x_, -cfg_.integral_limit_, cfg_.integral_limit_);
+    e_int_.y_ = math::clamp(e_int_.y_, -cfg_.integral_limit_, cfg_.integral_limit_);
+    e_int_.z_ = math::clamp(e_int_.z_, -cfg_.integral_limit_, cfg_.integral_limit_);
+    // ω_corrected = Kp·e + Ki·∫e
+    return math::Vec3f(cfg_.kp_ * e_acc.x_ + cfg_.ki_ * e_int_.x_,
+                       cfg_.kp_ * e_acc.y_ + cfg_.ki_ * e_int_.y_,
+                       cfg_.kp_ * e_acc.z_ + cfg_.ki_ * e_int_.z_);
+}
+
+math::Vec3f Mahony::heading_correction(const math::Vec3f& v) {
+    if (!is_heading_valid()) { return math::Vec3f(0, 0, 0); }  // 门控失败 → 该项 0
+    // 航向残差 = 参考 − 估计；wrap 到 [−π,π] 再限幅（每周期用当前 q̂ 现算，不得冻结）
+    float roll, pitch, psi;
+    q_.to_euler(roll, pitch, psi);
+    float e_heading = math::wrap_pi(heading_ref_ + heading_offset_ - psi);
+    e_heading = math::clamp(e_heading, -k_half_pi, k_half_pi);
+    // 绕世界 z 轴转 == 在机体系里沿重力方向 v̂ 加角速度（纯 P，不进积分：打滑不得污染零偏）
+    const float k = cfg_.kp_heading_ * heading_trust_ * e_heading;
+    return math::Vec3f(k * v.x_, k * v.y_, k * v.z_);
+}
+
+void Mahony::observe(const math::Vec3f& acc) {
+    acc_ = acc;
+    acc_.normalize();                                         // only fetch direction
+    acc_age_ = 0.0f;                                       // acc_age_唯一清零口
+}
+
+void Mahony::observe_heading(float heading_ref, float trust) {
+    if (!is_heading_aligned_) {
+        float roll, pitch, psi;
+        q_.to_euler(roll, pitch, psi);
+        heading_offset_ = math::wrap_pi(psi - heading_ref);
+        is_heading_aligned_ = true;
+    }
+    heading_ref_ = heading_ref;
+    heading_trust_ = math::clamp(trust, 0.0f, 1.0f);
+    heading_age_ = 0.0f;            // heading_age_ 唯一清零口
+}
+
+void Mahony::update(const math::Vec3f& gyro, const math::Vec3f& acc, float dt) {
+    observe(acc);
+    predict(gyro, dt);
+}
+
+// ----- ref valid check -----
+bool Mahony::is_acc_valid() const { return acc_age_ <= cfg_.acc_timeout_; }
+bool Mahony::is_heading_valid() const { return heading_age_ <= cfg_.heading_timeout_; }
+
+// ----- typical output -----
+const math::Quatf& Mahony::quaternion() const { return q_; }
+
+math::Vec3f Mahony::euler() const {
+    float roll, pitch, yaw;
+    q_.to_euler(roll, pitch, yaw);
+    return math::Vec3f(roll, pitch, yaw);
+}
+
+// ----- private -----
+void Mahony::reset_heading_channel() {
+    heading_ref_ = 0.0f;
+    heading_offset_ = 0.0f;
+    heading_age_ = k_never_measured_;
+    heading_trust_ = 1.0f;
+    is_heading_aligned_ = false;
+}
+
+
+
+}
+```
+
+### 验收（已实测）
+
+| 检查项 | 结果 |
+|---|---|
+| 严格编译 `-Wconversion -Wshadow -Werror -pedantic -fno-exceptions -fno-rtti` | 零告警 |
+| `ctest` | 5/5 |
+| `test_mahony` **17 锚点**（新增第 14 条"零契约"）| ALL PASS |
+| 五项回放验收 | **与 4a-2 逐位相同**（gt 0.085° / gt_slow 0.095° / gt_noisy 1.266° / gt_drop 0.385°）|
+
+**本批不改行为，只改结构** —— 所以验收标准就是"数字一模一样"。
+
+### 文件 16：测试与回放工具（AI 已写，无需抄录）
+
+- `tests/unit/test_math.cpp`（21 项）/ `test_math_audit.cpp`（**125 项**：含 wrap_pi B9a~B9j）/ `test_mahony.cpp`（**17 锚点**：4 基础 + 批次 4a 系列 13 条，含 P0-4 与零契约判别测试）/ `test_estimator.cpp`（**8 锚点**）
+- **批次 4a 的两条判别测试**（它们专门锁死下面两个易错点，抄漏了会红）：
+  · `4a-⑩ 参考恢复`：参考断线 10s 后再恢复，漂移必须被拉回 → 锁死「对齐只做一次」（`is_heading_aligned_`，**不能**用 `is_heading_valid()`）
+  · `4a-⑪ trust 越界`：负 trust 必须被 clamp 到 0 → 锁死 `math::clamp(trust, 0.0f, 1.0f)`
+  · `第13条 acc 失效`：一帧坏量测后断线，冻结残差**不得**被持续复用 → 锁死 P0-4 的年龄门控（实测：改回布尔闩锁会 FAIL）
+  · `第14条 零契约`：两通道都不在线 → 两个修正项都为 0（统一出口的语义）
+- `host/replay/replay_nav2.cpp`：读 NAV2 数据集（文本 12 列：acc3+gyro3+mag3+真值 euler3，弧度，50Hz）→ 跑 `Estimator<solver::Mahony>` → 输出 roll/pitch 的 RMSE/MAX（度）+ yaw 漂移；`-y` 选项注入外部航向（`none|gt|gt_slow|gt_noisy|gt_drop`）；可选导出 CSV
+- **验收标准**：`ctest` 5/5；
+  · 无外部航向时 roll/pitch RMSE < 5°，yaw 漂移是 6 轴预期行为（记录即可，不算失败）；
+  · 有外部航向时 **yaw RMSE < 2°** 且 roll/pitch 不退化。
+
+---
 
 **批次预告**：批次 4 = EKF（先补 Level 3 理论：状态空间/雅可比/可观测性/Q-R/卡方，再动手）；届时 `Estimator<solver::EKF>` 一行切换。
