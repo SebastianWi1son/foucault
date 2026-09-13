@@ -230,6 +230,45 @@ int main()
                "13) acc 失效：坏残差在超时后停止被复用（判据：pitch 停在小幅，而非一路上冲）");
     }
 
+    // 14) 统一出口的"零契约"：两个通道都不在线 → 两个修正项都为 0
+    //     （门控语义 = "该项取 0"，不是"跳过一段代码"；predict = gyro + 0 + 0）
+    {
+        solver::Mahony f;
+        f.reset(Quatf::from_euler(0.3f, 0.2f, 0.1f));      // 非平凡初值
+        for (int i = 0; i < 100; ++i) f.predict(Vec3f(0, 0, 0), DT);   // 无任何量测，陀螺也全 0
+        Vec3f e = f.euler();
+        const bool still = std::fabs(e.x_ - 0.3f) < 1e-4f && std::fabs(e.y_ - 0.2f) < 1e-4f
+                        && std::fabs(e.z_ - 0.1f) < 1e-4f;
+        expect(!f.is_acc_valid() && !f.is_heading_valid() && still,
+               "14) 统一出口零契约：两通道都不在线 → 修正项为 0，姿态原地不动");
+    }
+
+    // 15) 手动重新对齐 align_heading：只动"航向零点"，不动 roll/pitch，且对齐瞬间不跳变
+    {
+        solver::Mahony f;
+        const Quatf q0 = Quatf::from_euler(0.2f, -0.1f, 0.3f);
+        const Vec3f acc = q0.conjugated().rotate(Vec3f(0, 0, 1));
+        f.reset(q0);
+        for (int i = 0; i < 500; ++i)                       // ① 正常工作（首次自动兜底对齐）
+        {
+            f.observe(acc); f.observe_heading(0.3f); f.predict(Vec3f(0, 0, 0), DT);
+        }
+        const Vec3f before = f.euler();
+        f.align_heading(10.0f);                             // ② 手动重新对齐（参考换成新原点）
+        const Vec3f after = f.euler();
+        const bool no_jump = std::fabs(after.z_ - before.z_) < 1e-6f
+                          && std::fabs(after.x_ - before.x_) < 1e-6f
+                          && std::fabs(after.y_ - before.y_) < 1e-6f;
+        for (int i = 0; i < 1000; ++i)                      // ③ 之后参考从 10.0 → 10.5
+        {
+            const float ref = 10.0f + 0.5f * (float)(i < 500 ? i : 500) / 500.0f;
+            f.observe(acc); f.observe_heading(ref); f.predict(Vec3f(0, 0, 0), DT);
+        }
+        const Vec3f end = f.euler();
+        expect(no_jump && std::fabs(end.z_ - 0.8f) < 3e-2f && std::fabs(end.x_ - 0.2f) < 2e-2f,
+               "15) 手动重新对齐：瞬间不跳变 → 跟踪新参考（yaw 0.3→0.8），roll/pitch 不受扰");
+    }
+
     if (g_fail == 0)
     {
         std::printf("\nALL PASS\n");
