@@ -1738,6 +1738,8 @@ void Mahony::align_heading(float heading_ref) {
 }
 ```
 
+**顺序（2026-09-13 用户定案）**：先更新 `heading_ref_`，再用它算 `offset` —— 数学上与原顺序等价（实测逐位相同），但不变式 `target = ref + offset = ψ̂` **一眼可验**。**两行都必须注释说明目的**，尤其 ① 行，因为它存在的理由不在这两行之内。
+
 **关键细节（`heading_ref_ = heading_ref` 那一行）**：
 对齐时若**只**改 offset、不更新 `heading_ref_`，本周期 `predict` 会拿**旧 ref** 算残差 → 目标 `old_ref + new_offset ≠ ψ̂` → **姿态跳一下**。
 写上这一行后：`target = heading_ref + offset = heading_ref + (ψ̂ − heading_ref) = ψ̂` → **对齐瞬间姿态纹丝不动**。实测 `Δ < 1e-6`。
@@ -1913,17 +1915,18 @@ void Mahony::observe(const math::Vec3f& acc) {
 }
 
 void Mahony::observe_heading(float heading_ref, float trust) {
+    // 首次自动兜底：忘了手动对齐时航向通道也能工作（否则会静默失效）
     if (!is_heading_aligned_) { align_heading(heading_ref); }
-    heading_ref_ = heading_ref;
+    heading_ref_ = heading_ref;     // ★ 必须：让本周期目标自洽（否则拿旧 ref 算残差 → 对齐瞬间跳变）
     heading_trust_ = math::clamp(trust, 0.0f, 1.0f);
     heading_age_ = 0.0f;            // heading_age_ 唯一清零口
 }
 
 void Mahony::align_heading(float heading_ref) {
     float roll, pitch, psi;
-    q_.to_euler(roll, pitch, psi);
-    heading_offset_ = math::wrap_pi(psi - heading_ref);
-    heading_ref_ = heading_ref;
+    q_.to_euler(roll, pitch, psi);              // 初始化
+    heading_ref_ = heading_ref;                              // not下一行内联，而是用于predict内部更新 (不可删)
+    heading_offset_ = math::wrap_pi(psi - heading_ref_);
     is_heading_aligned_ = true;
 }
 
@@ -1954,6 +1957,7 @@ void Mahony::reset_heading_channel() {
     is_heading_aligned_ = false;
 }
 
+// Vec3的修正
 math::Vec3f Mahony::correction_acc(const math::Vec3f& v, float dt) {
     // Gating
     if (!is_acc_valid()) { return math::Vec3f(0.0f, 0.0f, 0.0f); }
@@ -1973,12 +1977,13 @@ math::Vec3f Mahony::correction_acc(const math::Vec3f& v, float dt) {
                        cfg_.kp_ * e_acc.z_ + cfg_.ki_ * e_int_.z_);
 }
 
+// 一维标量的修正
 math::Vec3f Mahony::correction_heading(const math::Vec3f& v) {
     // Gating
     if (!is_heading_valid()) { return math::Vec3f(0.0f, 0.0f, 0.0f); }
     // 航向残差 = 参考 − 估计；必须 wrap 到 [−π,π] 再限幅（每周期用当前 q̂ 现算，不得冻结）
     float roll, pitch, psi;
-    q_.to_euler(roll, pitch, psi);
+    q_.to_euler(roll, pitch, psi);      // 只取psi
     float e_heading = math::wrap_pi(heading_ref_ + heading_offset_ - psi);
     e_heading = math::clamp(e_heading, -k_half_pi, k_half_pi);
     // 绕世界z轴转 == body系中沿重力方向 v 加角速度（v 由上面的统一消费口给出，本周期只算一次）
@@ -2002,10 +2007,20 @@ math::Vec3f Mahony::correction_heading(const math::Vec3f& v) {
 
 **第 15 条判别测试**（锁死本批的三条语义）：
 ```
-① 对齐瞬间【不跳变】（Δ < 1e-6）        ← 锁住 heading_ref_ 那一行
-② 之后跟踪【新参考的变化量】（0.3 → 0.8） ← 锁住 offset 算法
-③ roll/pitch 不受扰（仍在 0.2/−0.1）     ← 锁住"只动航向零点"
+① 对齐【之后】的参考空窗期不跳变（0.2s 内 < 1e-4） ← 锁住 heading_ref_ 那一行
+② 空窗结束后跟踪【新参考的变化量】（0.3 → 0.8）     ← 锁住 offset 算法
+③ roll/pitch 不受扰（仍在 0.2/−0.1）                ← 锁住"只动航向零点"
 ```
+
+> ⚠️ **测试设计教训（AI 自查发现并修正，2026-09-13）**：本条测试**初版**断言的是"**调用 `align_heading()` 前后 `euler()` 不变**" —— 这是**同义反复**：`align_heading` 只写 `heading_offset_` / `heading_ref_`，**根本不碰 `q_`**，所以断言恒真、抓不到任何东西。
+> **实测证据**：把 `heading_ref_ = heading_ref;` 整行删掉，初版测试**依然 PASS**。
+>
+> 真正的判别点在对齐**之后**：`offset` 已换到新原点，若 `heading_ref_` 没跟着更新，下一个 `predict` 会拿**旧 ref** 算残差。实测（`align_heading(10.0)` 后不喂新参考）：
+> ```
+> 正确代码：yaw 0.299997 → 0.299998   （10 个周期漂 ~1e-6）
+> 删掉那行：yaw 0.299997 → 1.856112   （每周期 +8.98° → 0.2s 后 +89.16°）
+> ```
+> **教训**：判别测试必须断言**被改动的行为**，而不是"调用某个函数后某个状态没变" —— 后者若该函数压根不碰那个状态，就是恒真断言。
 
 ### 文件 16：测试与回放工具（AI 已写，无需抄录）
 
@@ -2015,7 +2030,7 @@ math::Vec3f Mahony::correction_heading(const math::Vec3f& v) {
   · `4a-⑪ trust 越界`：负 trust 必须被 clamp 到 0 → 锁死 `math::clamp(trust, 0.0f, 1.0f)`
   · `第13条 acc 失效`：一帧坏量测后断线，冻结残差**不得**被持续复用 → 锁死 P0-4 的年龄门控（实测：改回布尔闩锁会 FAIL）
   · `第14条 零契约`：两通道都不在线 → 两个修正项都为 0（统一出口的语义）
-  · `第15条 手动对齐`：`align_heading` 对齐瞬间不跳变、之后跟踪新参考、roll/pitch 不受扰
+  · `第15条 手动对齐`：对齐【后空窗期】不跳变、之后跟踪新参考、roll/pitch 不受扰
 - `host/replay/replay_nav2.cpp`：读 NAV2 数据集（文本 12 列：acc3+gyro3+mag3+真值 euler3，弧度，50Hz）→ 跑 `Estimator<solver::Mahony>` → 输出 roll/pitch 的 RMSE/MAX（度）+ yaw 漂移；`-y` 选项注入外部航向（`none|gt|gt_slow|gt_noisy|gt_drop`）；可选导出 CSV
 - **验收标准**：`ctest` 5/5；
   · 无外部航向时 roll/pitch RMSE < 5°，yaw 漂移是 6 轴预期行为（记录即可，不算失败）；

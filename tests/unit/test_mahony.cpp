@@ -243,7 +243,11 @@ int main()
                "14) 统一出口零契约：两通道都不在线 → 修正项为 0，姿态原地不动");
     }
 
-    // 15) 手动重新对齐 align_heading：只动"航向零点"，不动 roll/pitch，且对齐瞬间不跳变
+    // 15) 手动重新对齐 align_heading：只动"航向零点"，不动 roll/pitch；且不产生跳变
+    //     ⚠ 判别点在对齐【之后】的参考空窗期 —— align_heading 本身不动 q_，
+    //       所以"对齐瞬间 euler() 不变"是同义反复，抓不到任何东西。
+    //       真正的风险：offset 换成新原点后，若 heading_ref_ 没跟着更新，
+    //       下一个 predict 会用【旧 ref】算残差 → 目标错成 ψ̂−9.7 → 姿态被打飞。
     {
         solver::Mahony f;
         const Quatf q0 = Quatf::from_euler(0.2f, -0.1f, 0.3f);
@@ -254,11 +258,18 @@ int main()
             f.observe(acc); f.observe_heading(0.3f); f.predict(Vec3f(0, 0, 0), DT);
         }
         const Vec3f before = f.euler();
-        f.align_heading(10.0f);                             // ② 手动重新对齐（参考换成新原点）
-        const Vec3f after = f.euler();
-        const bool no_jump = std::fabs(after.z_ - before.z_) < 1e-6f
-                          && std::fabs(after.x_ - before.x_) < 1e-6f
-                          && std::fabs(after.y_ - before.y_) < 1e-6f;
+
+        f.align_heading(10.0f);                             // ② 参考换新原点（10.0）
+        float worst_yaw = 0.0f, worst_rp = 0.0f;
+        for (int i = 0; i < 10; ++i)                        // ②′ 参考空窗期（0.2s < timeout 0.3s）
+        {
+            f.observe(acc); f.predict(Vec3f(0, 0, 0), DT);  //    故意不调 observe_heading
+            const Vec3f e = f.euler();
+            worst_yaw = std::fmax(worst_yaw, std::fabs(e.z_ - before.z_));
+            worst_rp  = std::fmax(worst_rp, std::fmax(std::fabs(e.x_ - 0.2f), std::fabs(e.y_ + 0.1f)));
+        }
+        const bool no_jump = worst_yaw < 1e-4f && worst_rp < 2e-3f;
+
         for (int i = 0; i < 1000; ++i)                      // ③ 之后参考从 10.0 → 10.5
         {
             const float ref = 10.0f + 0.5f * (float)(i < 500 ? i : 500) / 500.0f;
@@ -266,7 +277,7 @@ int main()
         }
         const Vec3f end = f.euler();
         expect(no_jump && std::fabs(end.z_ - 0.8f) < 3e-2f && std::fabs(end.x_ - 0.2f) < 2e-2f,
-               "15) 手动重新对齐：瞬间不跳变 → 跟踪新参考（yaw 0.3→0.8），roll/pitch 不受扰");
+               "15) 手动重新对齐：参考空窗期不跳变 → 跟踪新参考（0.3→0.8），roll/pitch 不受扰");
     }
 
     if (g_fail == 0)
