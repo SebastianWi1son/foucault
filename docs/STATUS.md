@@ -73,7 +73,7 @@ ctest 结果：5/5 PASS（ASan + UBSan，本机复验 2026-09-13）
 ## 4. 生成方式（待实现）
 
 ```bash
-# 目标：scripts/gen_status.sh
+# 目标：⬜ scripts/gen_status.sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j
 ctest --test-dir build --output-on-failure

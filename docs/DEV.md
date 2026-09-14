@@ -48,7 +48,7 @@ generated: false
 ```
 Day 1~2  ▸ 读 Solà 2017《Quaternion kinematics for the error-state Kalman filter》
           · 只读第 1、2 章（四元数数学 + 运动学），约 30 页，免费 PDF
-          · 边读边把参考库 QuaternionEKF.c 的 F 矩阵装配对照看一遍
+          · 边读边把参考库 CtrBoard 的 QuaternionEKF 例程的 F 矩阵装配对照看一遍
 Day 3~4  ▸ 实现 math 内核 + Mahony + 桌面回放验证（NAV2 数据集 + 真值）
 Day 5~6  ▸ 移植 EKF（先读懂 F/H 再抄），卡方/渐消/限幅逐个加；Allan 方差定 Q/R
 随时     ▸ 维护"公式笔记"：每个实现过的公式一行注释来源（Solà eq.几 / 参考库哪一行）

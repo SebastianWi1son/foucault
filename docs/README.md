@@ -147,8 +147,13 @@ scripts/check_docs.py --why    # 打印规则清单与各自依据
 - 存在性以 **`git ls-files`** 为准 —— 用 `rglob` 会把本地有、git 里没有的 `reference/`
   也算进去，造成「本地过、CI 挂」的假绿。
 - 不受管：`trash/`（待裁决）· `reference/`（供应商）· `legacy/` · `build/`。
-- **存量违规**记在 [`../scripts/doc_lint_baseline.txt`](../scripts/doc_lint_baseline.txt)
-  （债务清单）：只减不增；数字变小脚本会提醒你更新；新增违规立刻变红。
+- **`⬜` 的行不做存在性检查** —— 用它标注路线图（如结构树里 `⬜ mat3.hpp（批次 4）`）。
+  有这个标记，文档才能诚实地同时写「现状」与「计划」，而不被门禁逼成只写现状。
+- **引 `reference/` 下的路径要写全**（例如 `reference/robot_localization/src/ekf.cpp`）
+  —— 落在 `.gitignore` 下的路径被视为“外部引用”，不当成对仓库现状的声称。
+- **存量例外**记在 [`../scripts/doc_lint_baseline.txt`](../scripts/doc_lint_baseline.txt)
+  （豁免清单）：只该装【有理由的例外】，不该装【还没修的债】。
+  超出条数→变红；少于条数→提醒改写小；条目消失→提醒删行。
 
 ### 待建 skill（三个）
 

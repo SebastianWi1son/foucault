@@ -328,7 +328,7 @@ struct OutputStatus {
 
 ④ **把 `is_meas_` 布尔闩锁换成残差年龄计数器**（2026-09-12 实测发现，P0-4）：
 
-现状 `mahony.cpp:25` 的门禁只判"**是否收到过**量测"（`mahony.cpp:51` 一次置位、除非 reset 永不回退），**无时效检查**。后果：量测中途失效时残差被冻结，`ω += Kp·e_last_frozen` 退化为**恒定假角速度**（≈ Kp·|e| ≈ 14 °/s），且 `q̂ → v → e` 反馈环断开 → 无负反馈 → 姿态匀逐跑飞。实测（第 100 s 断加速度计，后 220 s 无修正）：
+现状 `mahony.cpp` 的门禁只判"**是否收到过**量测"（`mahony.cpp` 一次置位、除非 reset 永不回退），**无时效检查**。后果：量测中途失效时残差被冻结，`ω += Kp·e_last_frozen` 退化为**恒定假角速度**（≈ Kp·|e| ≈ 14 °/s），且 `q̂ → v → e` 反馈环断开 → 无负反馈 → 姿态匀逐跑飞。实测（第 100 s 断加速度计，后 220 s 无修正）：
 
 | 方案 | 失效后 RMSE | 峰值 | 恶化到 >10° 用时 |
 |---|---|---|---|
@@ -356,7 +356,7 @@ predict(): age_ += dt;                // 每次推进累加
 
 ⑤ **`Quat::normalize` 不得吞掉 NaN**（2026-09-12 core/math 独立审计发现，P0-5；**✅ 已落地**）：
 
-`quat.hpp:29` 的守卫 `if (n2 > T(0))` 在 `n2` 为 NaN 时比较恒为 false → 静默 `*this = identity()`。后果（solver 层实测）：单帧 `acc=NaN` → `e_int_` 永久 NaN → `ω` 恒 NaN → `q` 每帧被重置为单位元 → **姿态突变到水平朝北且永久卡死，无任何错误信号**（即使之后 1 万帧数据全正常）。
+`quat.hpp` 的守卫 `if (n2 > T(0))` 在 `n2` 为 NaN 时比较恒为 false → 静默 `*this = identity()`。后果（solver 层实测）：单帧 `acc=NaN` → `e_int_` 永久 NaN → `ω` 恒 NaN → `q` 每帧被重置为单位元 → **姿态突变到水平朝北且永久卡死，无任何错误信号**（即使之后 1 万帧数据全正常）。
 
 ```
 // 修前（会吞 NaN）                       // 已落地（只区分零与脏）
@@ -446,7 +446,7 @@ e_heading = clamp(e_heading, −π/2, +π/2)               ← 防大跳变（�
 - **`heading_offset_`（首次观测自动对齐）**：估计器初始 yaw 是任意的（从 identity 起步 = 0°），参考却可能是 37°。首次观测记下 `heading_offset_ = ψ_est − ψ_ref`，之后只跟踪**变化量** → 任意初始航向都能对上，无需手工对准。
 - `reset()` 后必须**重新对齐**，否则旧 offset 会把新姿态拉偏。
 
-**时序澄清（`mahony.cpp:56-59` 为证）**：一个 `update()` = `observe` → `predict`，即一个完整周期内完成"量测→残差→修正+推进"。但 `observe` 里算 `v̂` 用的 `q_` 是**本周期修正前**的状态：
+**时序澄清（见 `mahony.cpp` 的 `update()`）**：一个 `update()` = `observe` → `predict`，即一个完整周期内完成"量测→残差→修正+推进"。但 `observe` 里算 `v̂` 用的 `q_` 是**本周期修正前**的状态：
 
 ```
 q_k ──observe: v̂ = q_k*·(0,0,1), e = a × v̂──► e_last_
@@ -847,30 +847,37 @@ struct Measurement {
 
 关键规则：**观测源失效 ≠ 滤波器失效** —— 磁力计被干扰时自动降级为"相对航向"并打标志，不拉歪 yaw、不重置。
 
-### 4.3 目录结构（概念版）
+### 4.3 目录结构
+
+**图例**：✅ = 已存在 ｜ ⬜ = 计划中（尚未创建）
 
 ```
 foucault/
 ├── core/                       # ★ 算法核心：C++17，无 STL/异常/RTTI/动态内存
-│   ├── math/                   # vec3.h quat.h mat3.h mat6.h scalar_ops.h
-│   ├── model/                  # state.h kinematics.h dof.h（2D/2.5D/3D）
-│   ├── measure/                # measurement.h gravity.h magnetometer.h yaw_reference.h
-│   ├── solver/                 # gain_solver.h mahony.h madgwick.h ekf.h kf_1d.h
-│   ├── estimator.h             # 门面：template<typename S, int DoF>
-│   ├── config.h                # 配置结构体 + profile 预设表
-│   └── output.h                # 输出快照 + 品质标志
+│   ├── math/                   # ✅ vec3.hpp  quat.hpp  scalar_ops.hpp（已冻结）
+│   │                           # ⬜ mat3.hpp  mat6.hpp
+│   ├── model/                  # ⬜ state.hpp  kinematics.hpp  dof.hpp（2D/2.5D/3D）
+│   ├── measure/                # ✅ measure.hpp
+│   │                           # ⬜ gravity.hpp  magnetometer.hpp  yaw_reference.hpp
+│   ├── solver/                 # ✅ mahony.hpp  mahony.cpp
+│   │                           # ⬜ gain_solver.hpp  madgwick.hpp  ekf.hpp  kf_1d.hpp
+│   ├── estimator.hpp           # ✅ 门面
+│   ├── config.hpp              # ✅ Dimension 枚举（⚠️ 维度模式是占位，见 F13 / A2）
+│   └── output.hpp              # ⬜ 输出快照 + 品质标志（F8，零实现）
 ├── host/                       # 主机工具（桌面，允许 STL）
-│   ├── replay/                 # 数据集回放 + 真值对比 + RMSE 指标
-│   ├── allan/                  # Allan 方差 → Q/R 标定
-│   ├── calib/                  # 加速度计六面法 / 磁力计椭球拟合
-│   └── plot/                   # 对比可视化
-├── platforms/                  # 平台适配示例
-│   ├── arm_cmsis/              # 标量钩子 → CMSIS-DSP
-│   └── desktop/                # std::chrono 时间戳、printf 日志
-├── tests/                      # unit/ regress/ bench/
+│   └── replay/                 # ✅ replay_nav2.cpp（回放 + 真值对比 + RMSE）
+│                               # ⬜ allan/  calib/  plot/
+├── platforms/                  # ⬜ 平台适配示例（arm_cmsis / desktop）
+├── tests/                      # ✅ unit/（4 个）· tools/（金标生成器）
+│                               # ⬜ regress/  bench/
+├── data/                       # ✅ NAV2 数据集
 ├── docs/                       # 本文档体系
-└── reference/                  # 三个参考库（只读）
+└── reference/                  # 三个参考库（只读，不入 git）
 ```
+
+> **2026-09-14 修正**：本表原先把“计划”当“已存在”，且 `.h`/`.hpp` 扩展名混用（实际全 `.hpp`）。
+> 现在 ✅/⬜ 分开标注 —— **`⬜` 行由 `scripts/check_docs.py` 豁免存在性检查**
+> （它们是路线图，不是对仓库现状的声称）。见 P2-3。
 
 ### 4.3.1 `core/math/` 归档状态（2026-09-12 定案）
 
