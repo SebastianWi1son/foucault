@@ -3,7 +3,7 @@ class: fact
 generated: false
 ---
 > **类：B 事实** —— 开发流程（体量 / 理论路径 / 工程规范 / 开工顺序）。
-> AI 工作规则见根目录 [`AGENT.md`](../AGENT.md)；文档体系见 [`README.md`](README.md)。
+> AI 工作规则见根目录 [`AGENTS.md`](../AGENTS.md)；文档体系见 [`README.md`](README.md)。
 
 # DEV.md — 开发流程：体量、理论路径、工程规范、开工顺序
 

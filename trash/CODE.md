@@ -8,7 +8,7 @@
 
 ```
 foucault/
-├── AGENT.md                    # 代理规则（含本文档索引）
+├── AGENTS.md                    # 代理规则（含本文档索引）
 ├── CMakeLists.txt              # ✅ AI 编写；test_math/mahony/estimator + replay_nav2 四 target
 ├── core/
 │   ├── config.hpp              # ✅ 批次 3 已抄录（Dimension + make_mahony_config，2026-08-30 用户定案改）
@@ -2087,7 +2087,7 @@ unsigned rejected_count() const;   // 自构造或上次 reset() 起，被守门
 
 ### 文件 24~26：**改动定位图**（3 个文件，共 11 处）
 
-> ⚠️ **本批起 CODE.md 代码块改为「改动定位图」格式**（`AGENT.md §7`，2026-09-13 用户定案）：
+> ⚠️ **本批起 CODE.md 代码块改为「改动定位图」格式**（`AGENTS.md §7`，2026-09-13 用户定案）：
 > **代码块不再是粘贴源**。**只替换标 `★4a-5` 的行**；未标 ★ 的行**不要动**——它们只为定位存在，**原有注释已略去**。
 
 ---
@@ -2163,7 +2163,7 @@ struct MahonyConfig {
 
 > 你已写的 `bool is_infinite(...)` **名字是反的**：它返回 `true` 表示"**是有限值**"。**单行/多行都行，关键是把名字改对。**
 > 若照名字写成 `if (is_infinite(acc)) return;` → **好帧全被丢、NaN 反而被收**（最坏的组合）。
-> 必须改名（`AGENT.md §3` 命名评估：名字要说出返回值的含义）。
+> 必须改名（`AGENTS.md §3` 命名评估：名字要说出返回值的含义）。
 
 ```cpp
     constexpr float k_half_pi = 1.5707963267948966f;

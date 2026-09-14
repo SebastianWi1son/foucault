@@ -55,8 +55,8 @@ generated: true | false
 | 现在能做什么、验收数字 | `STATUS.md`（目标：生成） |
 | 进度 / 待办 / 未验证项 | `待办.md` |
 | 怎么开工、怎么跑测试 | 根 `README.md` + `DEV.md` |
-| AI 的工作规则 | 根 `AGENT.md` |
-| AI 犯过的错 | 根 `AGENT.md` §9 错误账本 |
+| AI 的工作规则 | 根 `AGENTS.md` |
+| AI 犯过的错 | 根 `AGENTS.md` §9 错误账本 |
 | 我犯过的错 | `log/复盘.md` |
 | 我理解的过程 | `log/答疑.md` |
 | 调研结论 | `log/RESEARCH.md` |
@@ -72,7 +72,7 @@ generated: true | false
 ```
 foucault/
 ├── README.md            # B 事实：是什么 + 怎么跑（不许有会变的事实）
-├── AGENT.md             # B 事实：AI 工作规则 + 错误账本（≤ 一屏）
+├── AGENTS.md             # B 事实：AI 工作规则 + 错误账本（≤ 一屏）
 ├── docs/
 │   ├── README.md        # B 事实：本文档体系说明  ← 你在这里
 │   ├── DESIGN.md        # B 事实：设计权威（本质公式 + 场景 + 决策表）
@@ -116,7 +116,7 @@ foucault/
 
 ```
 能写成脚本判的        → 脚本 / CI          （最硬，不需要人记）
-判不了但每次都要守的  → AGENT.md          （常驻，≤ 一屏）
+判不了但每次都要守的  → AGENTS.md          （常驻，≤ 一屏）
 只在特定任务用的流程  → skill              （按需加载）
 其余                  → 别写
 ```
@@ -125,9 +125,9 @@ foucault/
 |---|---|---|
 | 文档里引用的路径 / 符号必须存在 | **CI 脚本** | 机器能判 |
 | `STATUS.md` 必须是生成的（重跑无 diff） | **CI 脚本** | 机器能判 |
-| 命名约定（snake_case / 成员尾下划线） | `AGENT.md` | 每次都要守 |
-| 不许改 `core/math/`（冻结区） | `AGENT.md` | 常驻约束 |
-| 文档三类 + 新建文档判据 | `AGENT.md`（3 行）+ 本页 | 每次写文档都要守 |
+| 命名约定（snake_case / 成员尾下划线） | `AGENTS.md` | 每次都要守 |
+| 不许改 `core/math/`（冻结区） | `AGENTS.md` | 常驻约束 |
+| 文档三类 + 新建文档判据 | `AGENTS.md`（3 行）+ 本页 | 每次写文档都要守 |
 | **批次验收**流程 | **skill** | 特定任务，步骤多 |
 | **文档对账**流程 | **skill** | 同上 |
 | **尺子审计**流程 | **skill** | 同上 |

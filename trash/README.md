@@ -15,7 +15,7 @@ generated: false
 | 文件 | 它到底是什么 | 为什么在这里 | 解冻后怎么判 |
 |---|---|---|---|
 | `CODE.md` | **施工单**，不是文档。2297 行，逐批把代码又抄了一遍（代码本体 2225 行） | 代码是唯一源，施工单验收后即失效 | ① 直接删（历史在 git 里）；或② 压缩成"每批 3~5 行改动记录"存进 `docs/log/` |
-| `AGENT.md.original` | **压缩前的完整 AGENT.md**（163 行） | 压缩成 ≤ 一屏的新版，原文保底留档 | 确认新版没有漏掉规则 → 删 |
+| `AGENTS.md.original` | **压缩前的完整 AGENTS.md**（163 行） | 压缩成 ≤ 一屏的新版，原文保底留档 | 确认新版没有漏掉规则 → 删 |
 
 ---
 
@@ -32,7 +32,7 @@ generated: false
 | 新建 | `docs/README.md`（文档体系说明 = 模板） |
 | 新建 | `docs/STATUS.md`（当前状态唯一来源） |
 | 新建 | `trash/README.md`（本文件） |
-| 压缩 | `AGENT.md`（163 → ≤ 一屏），原文存 `trash/AGENT.md.original` |
+| 压缩 | `AGENTS.md`（163 → ≤ 一屏），原文存 `trash/AGENTS.md.original` |
 | 加头 | 7 个文档加上 `class:` front-matter + 一句话类规则（**只加，未删**） |
 
 **没有删除任何信息，没有修改任何源码。**
@@ -53,9 +53,9 @@ generated: false
 | 4 | `DESIGN.md` 通篇用 `mahony.cpp:25` / `quat.hpp:29` 一类行号，已全部错位 | 行 25 现在是 `reset()` 里的赋值；真正门禁在第 42 行 | 全文替换为符号名 |
 | 5 | `DESIGN.md` §4.3 把**计划**当**已存在**：`core/model/`、`core/output.h`、`platforms/`、`host/allan|calib|plot` 均不存在 | `git ls-files` 无这些路径 | 每项标注 ✅已存在 / ⬜计划中（批次 N） |
 | 6 | `DESIGN.md` §4.4 代码块用 camelCase（`observeAccel`）且写 `virtual GainSolver`，与 F13 定案（模板策略、snake_case）冲突 | 与 §5 决策表 F13 对不上 | 整体重写或标注"早期草案" |
-| 7 | `AGENT.md.original` §2 说"根目录尚未 git init"，§9 说"已 git init（2026-08-30）" | 同文件自相矛盾 | 新版已删（原文留档） |
-| 8 | `AGENT.md.original` §4 要求"构建与测试命令写入 `tests/README`"，该文件不存在 | `git ls-files` 无 `tests/README*` | 补建或删要求 |
-| 9 | `AGENT.md.original` §8.2 称"F1~F13 全部已定"，§8.3 称"开工步骤 1 core/math 未开始" | F14 是提案；core/math 早已冻结 | 新版已删（原文留档） |
+| 7 | `AGENTS.md.original` §2 说"根目录尚未 git init"，§9 说"已 git init（2026-08-30）" | 同文件自相矛盾 | 新版已删（原文留档） |
+| 8 | `AGENTS.md.original` §4 要求"构建与测试命令写入 `tests/README`"，该文件不存在 | `git ls-files` 无 `tests/README*` | 补建或删要求 |
+| 9 | `AGENTS.md.original` §8.2 称"F1~F13 全部已定"，§8.3 称"开工步骤 1 core/math 未开始" | F14 是提案；core/math 早已冻结 | 新版已删（原文留档） |
 
 ### P2 — 内容重复（同一条事实多个副本）
 
@@ -73,7 +73,7 @@ generated: false
 | 14 | 命名语言不统一：`答疑.md` / `复盘.md`（中文）vs `RESEARCH.md` / `HANDOFF.md`（英文） | 统一为一种（建议中文）；**注意会打断现有引用** |
 | 15 | 根 `README.md` 与 `docs/README.md` 同名，含义不同 | 可接受，但根 README 顶部加一行指向 `docs/README.md` |
 | 16 | `docs/Quaternion kinematics ... .pdf`（23987 行）是外部论文，与本仓文档同级 | 移到 `docs/ref/` |
-| 17 | `examples/` 空目录，但 `CMakeLists.txt` 注释与 `AGENT.md` 都提到它 | 补最小示例，或删目录 + 清注释 |
+| 17 | `examples/` 空目录，但 `CMakeLists.txt` 注释与 `AGENTS.md` 都提到它 | 补最小示例，或删目录 + 清注释 |
 
 ### P4 — 待建机制（不是矛盾，是缺口）
 

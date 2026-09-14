@@ -2,11 +2,11 @@
 class: fact
 generated: false
 ---
-# AGENT.md — foucault 代理工作规则
+# AGENTS.md — foucault 代理工作规则
 
 > **类：B 事实（规则）**。本文**只放"每次都要遵守"的约束**，压在一屏内。
 > 按需流程（批次验收 / 文档对账 / 尺子审计）见 `docs/README.md` §7。
-> 文档体系见 [`docs/README.md`](docs/README.md)。压缩前的完整原文见 `trash/AGENT.md.original`（内容未删）。
+> 文档体系见 [`docs/README.md`](docs/README.md)。压缩前的完整原文见 `trash/AGENTS.md.original`（内容未删）。
 
 ## 1. 项目一句话
 
@@ -73,6 +73,6 @@ foucault = 通用可移植**姿态解算核心**（C++17；core 零依赖，禁 
 |---|---|---|
 | 2026-09-13 | 用被测代码自己的 `rotate` 生成测试输入（循环尺子） | 测试的输入 / 期望值**不得**由被测对象生成 |
 | 2026-09-13 | 文档引用 `mahony.cpp:NN` 行号，重构后全部错位 | 文档**禁止行号**，只写符号名 |
-| 2026-09-13 | `AGENT.md` 同时写着"尚未 git init"和"已 git init" | 同一条事实只允许存在一处 |
+| 2026-09-13 | `AGENTS.md` 同时写着"尚未 git init"和"已 git init" | 同一条事实只允许存在一处 |
 | 2026-09-13 | 声称"测试写得很全"，但 `Dimension` 测试是恒真断言（删掉目标也不 FAIL） | 每条测试必须验证**判别力**（改坏 → 必须红） |
 |  |  |  |
