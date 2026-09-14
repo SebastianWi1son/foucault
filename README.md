@@ -8,6 +8,8 @@
 
 ## 当前状态
 
+> ⚠️ 下表为**历史快照**（2026-09-13）。**当前状态见 [`docs/STATUS.md`](docs/STATUS.md)**（唯一来源）。
+
 | 批次 | 内容 | 状态 |
 |---|---|---|
 | 1 | 数学内核（`vec3` / `quat` / `scalar_ops`） | ✅ 21 PASS |
@@ -66,14 +68,20 @@ reference/     三个参考库（只读，不入 git）
 
 ## 文档
 
-| 文件 | 内容 |
-|---|---|
-| [`docs/DESIGN.md`](docs/DESIGN.md) | **设计权威**：本质公式 / 场景覆盖 / 设计决策 / 决策点状态表 |
-| [`docs/DEV.md`](docs/DEV.md) | 开发流程：体量 / 理论路径 / 工程规范 / 开工顺序 |
-| [`docs/RESEARCH.md`](docs/RESEARCH.md) | 调研：算法全景 / 开源库 / 参考库分析 |
-| [`docs/CODE.md`](docs/CODE.md) | 代码施工文档（逐批次真实代码） |
-| [`docs/HANDOFF.md`](docs/HANDOFF.md) | 交接速查 |
-| [`docs/答疑.md`](docs/答疑.md) | **概念问答录**：理解过程中的问题与解答（直觉 / 推导 / 代码索引，含错答修正痕迹） |
+> 文档体系说明（三类文档 / 归属表 / 写作模板）见 **[`docs/README.md`](docs/README.md)**。
+
+| 文件 | 类 | 内容 |
+|---|---|---|
+| [`docs/README.md`](docs/README.md) | B 事实 | **文档体系说明**：三类文档 / 事实归属表 / 模板 / 六条硬规则 |
+| [`docs/STATUS.md`](docs/STATUS.md) | C 状态 | **当前状态唯一来源**：实现进度 / 验收基线 / 测试（目标：脚本生成） |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | B 事实 | **设计权威**：本质公式 / 场景覆盖 / 设计决策 / 决策点状态表 |
+| [`docs/DEV.md`](docs/DEV.md) | B 事实 | 开发流程：体量 / 理论路径 / 工程规范 / 开工顺序 |
+| [`docs/待办.md`](docs/待办.md) | C 状态 | **进度 / 待办唯一来源**（含审阅归档） |
+| [`docs/log/RESEARCH.md`](docs/log/RESEARCH.md) | A 日志 | 调研：算法全景 / 开源库 / 参考库分析 |
+| [`docs/log/答疑.md`](docs/log/答疑.md) | A 日志 | **概念问答录**：理解过程中的问题与解答（含错答修正痕迹，只增不改） |
+| [`docs/log/复盘.md`](docs/log/复盘.md) | A 日志 | 错误清单（只增不改） |
+| [`docs/log/HANDOFF.md`](docs/log/HANDOFF.md) | A 日志 | 冻结 / 交接快照（带日期，不代表当前状态） |
+| `trash/` | 待裁决 | 非文档 / 过期 / 矛盾内容，原信息未删，解冻后判定 → [`trash/README.md`](trash/README.md) |
 
 ## 参考实现
 
