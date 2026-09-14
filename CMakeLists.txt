@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.21)
 project(foucault LANGUAGES CXX)
 
 # foucault — 通用可移植姿态解算核心
@@ -12,10 +12,29 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug)
 endif()
 
-# ── 核心库：当前为 header-only，用 INTERFACE 库（无编译产物，只传播头文件路径与编译选项）──
+# ── 核心库：头文件部分，用 INTERFACE 库（无编译产物，只传播头文件路径与编译选项）──
+# 消费方： target_link_libraries(<你的 target> PRIVATE foucault_solver)
 add_library(foucault_core INTERFACE)
 target_include_directories(foucault_core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/core)
 target_compile_options(foucault_core INTERFACE -Wall -Wextra -Werror)
+
+# ── 求解器实现（有 .cpp，**必须**进一个 STATIC 库）──
+# 2026-09-14 补：原先 mahony.cpp 只被直接写进各个 test 可执行文件，
+# foucault_core 里没有任何 .o —— 外部工程 link foucault_core 会报一堆
+# "undefined reference to foucault::solver::Mahony::..."。
+# 一个库要能被别人用，必须导出一个【完整可链接】的 target。
+add_library(foucault_solver STATIC core/solver/mahony.cpp)
+target_link_libraries(foucault_solver PUBLIC foucault_core)
+target_compile_options(foucault_solver PRIVATE -Wall -Wextra -Werror)
+
+# ── 被别的工程当子项目引入时（add_subdirectory / FetchContent），只提供库 ──
+#    否则固件工程会连着生成 test_math / replay_nav2 / ... 一堆宿主可执行文件，
+#    交叉编译时直接失败。（与 lunokhod 各组件同一套守卫）
+if(NOT PROJECT_IS_TOP_LEVEL)
+    message(STATUS "foucault: 作为子项目引入 -> 只提供库 foucault_core / foucault_solver")
+    return()
+endif()
+message(STATUS "foucault: 顶层构建 -> 生成测试 / 回放工具")
 
 # ── 锚点测试（行为不变式；ASan/UBSan 加持）──
 enable_testing()
