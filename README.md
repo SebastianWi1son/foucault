@@ -1,3 +1,7 @@
+---
+class: fact
+generated: false
+---
 # foucault
 
 通用可移植**姿态解算（attitude estimation）算法核心** —— 一个内核框架 + 可插拔增益求解器（Mahony / Madgwick / EKF / 1D-KF）× 可裁剪维度模式（2D / 2.5D / 3D）× 可注入量测源（6 轴 / 9 轴 / 外部 yaw）。

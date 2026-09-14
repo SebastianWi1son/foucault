@@ -1,3 +1,7 @@
+---
+class: fact
+generated: false
+---
 # data/ — 测试数据集
 
 - `NAV2_data.bin`：NAV2 数据集（源：reference/IMU_Attitude_Estimator 参考库，2026-08-30 复制入库，因 reference/ 整体不入 git）。

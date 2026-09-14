@@ -121,16 +121,34 @@ foucault/
 其余                  → 别写
 ```
 
-| 规则 | 放哪 | 为什么 |
+| 规则 | 放哪 | 状态 |
 |---|---|---|
-| 文档里引用的路径 / 符号必须存在 | **CI 脚本** | 机器能判 |
-| `STATUS.md` 必须是生成的（重跑无 diff） | **CI 脚本** | 机器能判 |
+| 文件头齐全 / 类与位置相符 / 禁止行号 / 链接与引用存在 / `fact` 非孤儿 | **CI 脚本** | ✅ `scripts/check_docs.py` |
+| `STATUS.md` 必须是生成的（重跑无 diff） | **CI 脚本** | ⬜ 待建（要先生成脚本） |
 | 命名约定（snake_case / 成员尾下划线） | `AGENTS.md` | 每次都要守 |
 | 不许改 `core/math/`（冻结区） | `AGENTS.md` | 常驻约束 |
 | 文档三类 + 新建文档判据 | `AGENTS.md`（3 行）+ 本页 | 每次写文档都要守 |
 | **批次验收**流程 | **skill** | 特定任务，步骤多 |
 | **文档对账**流程 | **skill** | 同上 |
 | **尺子审计**流程 | **skill** | 同上 |
+
+### 已实现的门禁：`scripts/check_docs.py`
+
+规则的具体实现清单用 `scripts/check_docs.py --why` 看 —— **不在这里重复一遍**：
+“同一句话说两遍就要打架”，这条规矩对自己也适用。
+
+```bash
+scripts/check_docs.py          # 检查；有违规 → 退出码 1
+scripts/check_docs.py --list   # 列出受管文件与它们的类
+scripts/check_docs.py --why    # 打印规则清单与各自依据
+```
+
+- **零依赖**（不用 PyYAML），CI 里不需要装包。
+- 存在性以 **`git ls-files`** 为准 —— 用 `rglob` 会把本地有、git 里没有的 `reference/`
+  也算进去，造成「本地过、CI 挂」的假绿。
+- 不受管：`trash/`（待裁决）· `reference/`（供应商）· `legacy/` · `build/`。
+- **存量违规**记在 [`../scripts/doc_lint_baseline.txt`](../scripts/doc_lint_baseline.txt)
+  （债务清单）：只减不增；数字变小脚本会提醒你更新；新增违规立刻变红。
 
 ### 待建 skill（三个）
 

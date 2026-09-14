@@ -1,11 +1,26 @@
 name: CI
 
+# 两件事：
+#   ① 构建 + 全量 ctest（含 NAV2 数据集 RMSE 验收）
+#   ② 文档门禁（把 docs/README.md 的规矩变成机器判）
+
 on:
   push:
   pull_request:
   workflow_dispatch:
 
 jobs:
+  # ── ② 文档门禁 ─────────────────────────────────────────────
+  # 规矩写在 docs/README.md，实现写在 scripts/check_docs.py。
+  # 没有这一步，“文档规矩”就只能靠记性。
+  docs-gate:
+    name: 文档门禁（文件头 / 类与位置 / 禁止行号 / 链接与引用存在 / fact 非孤儿）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 检查
+        run: python3 scripts/check_docs.py
+
   build-and-test:
     runs-on: ubuntu-latest
 
